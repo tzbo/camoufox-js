@@ -461,18 +461,13 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
             media: !userSetMediaDevices && "mediaDevices:enabled" in knownProperties,
         });
     }
-    // Update fonts list
-    if (fonts) {
-        config.fonts = fonts;
-    }
     if (custom_fonts_only) {
         firefox_user_prefs["gfx.bundled-fonts.activate"] = 0;
         if (fonts) {
-            // The user has passed their own fonts, and OS fonts are disabled.
             LeakWarning.warn("custom_fonts_only");
+            config.fonts = fonts;
         }
         else {
-            // OS fonts are disabled, and the user has not passed their own fonts either.
             throw new Error("No custom fonts were passed, but `custom_fonts_only` is enabled.");
         }
     }
@@ -483,6 +478,9 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
         catch {
             updateFonts(config, targetOS);
         }
+    }
+    if (fonts && fonts.length && !custom_fonts_only) {
+        config.fonts = Array.from(new Set([...(config.fonts || []), ...fonts]));
     }
     if ("voices" in knownProperties && !("voices" in config)) {
         try {

@@ -26,6 +26,7 @@ export declare function applyConfigFixes(config: Record<string, any>, targetOs: 
 }): void;
 export interface ContextFingerprintOptions {
     preset?: FingerprintPreset;
+    fingerprint?: Fingerprint;
     os?: string | string[];
     ffVersion?: string;
     ff_version?: string;

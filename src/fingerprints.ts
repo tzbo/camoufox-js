@@ -128,9 +128,9 @@ export function generateFingerprint(
 }
 
 const MARKER_FONTS: Record<"win" | "mac" | "lin", string[]> = {
-	mac: ["Helvetica Neue", "PingFang HK", "PingFang SC", "PingFang TC"],
-	win: ["Segoe UI", "Tahoma", "Cambria Math", "Nirmala UI"],
-	lin: ["Arimo", "Cousine", "Tinos", "Twemoji Mozilla"],
+	mac: ["Helvetica Neue", "PingFang HK", "PingFang SC", "PingFang TC", "Hiragino Sans GB", "Songti SC"],
+	win: ["Segoe UI", "Tahoma", "Cambria Math", "Nirmala UI", "Microsoft YaHei", "Microsoft YaHei UI", "SimSun", "NSimSun"],
+	lin: ["Arimo", "Cousine", "Tinos", "Twemoji Mozilla", "Noto Sans SC", "Noto Sans TC"],
 };
 
 function randint(min: number, max: number): number {
@@ -605,6 +605,7 @@ function buildInitScript(values: Record<string, any>): string {
 
 export interface ContextFingerprintOptions {
 	preset?: FingerprintPreset;
+	fingerprint?: Fingerprint;
 	os?: string | string[];
 	ffVersion?: string;
 	ff_version?: string;
@@ -651,7 +652,7 @@ export async function generateContextFingerprint(
 		const genOpts: Partial<FingerprintGeneratorOptions> = {};
 		if (operatingSystems) genOpts.operatingSystems = operatingSystems;
 		if (options.screen) genOpts.screen = options.screen;
-		const fp = generateFingerprint(
+		const fp = options.fingerprint ?? generateFingerprint(
 			undefined,
 			Object.keys(genOpts).length ? genOpts : undefined,
 		);

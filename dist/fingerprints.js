@@ -87,9 +87,9 @@ export function generateFingerprint(window, config) {
     return FP_GENERATOR.getFingerprint(config).fingerprint;
 }
 const MARKER_FONTS = {
-    mac: ["Helvetica Neue", "PingFang HK", "PingFang SC", "PingFang TC"],
-    win: ["Segoe UI", "Tahoma", "Cambria Math", "Nirmala UI"],
-    lin: ["Arimo", "Cousine", "Tinos", "Twemoji Mozilla"],
+    mac: ["Helvetica Neue", "PingFang HK", "PingFang SC", "PingFang TC", "Hiragino Sans GB", "Songti SC"],
+    win: ["Segoe UI", "Tahoma", "Cambria Math", "Nirmala UI", "Microsoft YaHei", "Microsoft YaHei UI", "SimSun", "NSimSun"],
+    lin: ["Arimo", "Cousine", "Tinos", "Twemoji Mozilla", "Noto Sans SC", "Noto Sans TC"],
 };
 function randint(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -525,7 +525,7 @@ export async function generateContextFingerprint(options = {}) {
             genOpts.operatingSystems = operatingSystems;
         if (options.screen)
             genOpts.screen = options.screen;
-        const fp = generateFingerprint(undefined, Object.keys(genOpts).length ? genOpts : undefined);
+        const fp = options.fingerprint ?? generateFingerprint(undefined, Object.keys(genOpts).length ? genOpts : undefined);
         config = fromBrowserforge(fp, ffVersion);
         config["fonts:spacing_seed"] ??= randint(1, 4_294_967_295);
         config["audio:seed"] ??= randint(1, 4_294_967_295);
