@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { Camoufox, NewContext, generateContextFingerprint } from "../src";
+import {
+	Camoufox,
+	NewContext,
+	generateContextFingerprint,
+	getRandomPreset,
+} from "../src";
 import { INSTALL_DIR } from "../src/pkgman";
 
 function camoufoxInstalled(): boolean {
@@ -26,6 +31,21 @@ describe("generateContextFingerprint", () => {
 		});
 		expect(fp.config["fonts:spacing_seed"]).toBe(0);
 		expect(fp.initScript).toContain("setFontSpacingSeed(0)");
+	});
+
+	test("accepts snake_case aliases", async () => {
+		const fp = await generateContextFingerprint({
+			os: "linux",
+			ff_version: "148",
+			config_overrides: { "fonts:spacing_seed": 1 },
+		});
+		expect(fp.config["navigator.userAgent"]).toMatch(/Firefox\/148/);
+		expect(fp.config["fonts:spacing_seed"]).toBe(1);
+	});
+
+	test("getRandomPreset returns a macos preset", () => {
+		const preset = getRandomPreset("macos");
+		expect(preset?.navigator?.userAgent).toMatch(/Mac OS/i);
 	});
 
 	test("two calls produce different seeds", async () => {

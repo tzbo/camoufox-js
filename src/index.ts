@@ -6,6 +6,9 @@ export {
 	fromPreset,
 	fromBrowserforge,
 	generateFingerprint,
+	getRandomPreset,
+	loadPresets,
+	applyConfigFixes,
 } from "./fingerprints.js";
 export type {
 	ContextFingerprint,
@@ -13,3 +16,4 @@ export type {
 	FingerprintPreset,
 } from "./fingerprints.js";
 export { type LaunchOptions, launchOptions } from "./utils.js";
+export { DefaultAddons } from "./addons.js";

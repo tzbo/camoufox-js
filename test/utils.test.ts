@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { getPath } from "../src/pkgman";
+import { INSTALL_DIR } from "../src/pkgman";
 import { getAsBooleanFromENV, launchOptions } from "../src/utils";
+
+function camoufoxInstalled(): boolean {
+	return fs.existsSync(path.join(INSTALL_DIR.toString(), "version.json"));
+}
 
 describe("getAsBooleanFromENV", () => {
 	afterEach(() => {
@@ -41,7 +46,7 @@ describe("getAsBooleanFromENV", () => {
 	});
 });
 
-describe("launchOptions seeding", () => {
+describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 	const readConfig = (env: Record<string, unknown>) =>
 		JSON.parse(
 			Object.keys(env)
@@ -100,6 +105,22 @@ describe("launchOptions seeding", () => {
 		expect(keys).toContain("fonts:spacing_seed");
 		expect(keys).not.toContain("audio:seed");
 		expect(keys).not.toContain("canvas:seed");
+	});
+
+	test("does not pin window.history.length", async () => {
+		const { env } = await launchOptions({ headless: true });
+		expect(readConfig(env)["window.history.length"]).toBeUndefined();
+	});
+
+	test("fingerprint_preset true uses a bundled preset", async () => {
+		const { env } = await launchOptions({
+			headless: true,
+			os: "macos",
+			fingerprint_preset: true,
+		});
+		const config = readConfig(env);
+		expect(config["navigator.userAgent"]).toMatch(/Mac OS/i);
+		expect(config["webGl:vendor"]).toBeTruthy();
 	});
 
 	test("still rejects an explicitly passed unsupported seed", async () => {

@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type Fingerprint,
 	FingerprintGenerator,
@@ -7,6 +10,9 @@ import {
 import BROWSERFORGE_DATA from "./mappings/browserforge.config.js";
 import FONTS from "./mappings/fonts.config.js";
 import { sampleWebGL } from "./webgl/sample.js";
+
+const currentDir =
+	import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 
 export const SUPPORTED_OS = ["linux", "macos", "windows"] as const;
 
@@ -145,7 +151,7 @@ function osToKey(osName: string): "win" | "mac" | "lin" {
 	return "mac";
 }
 
-function generateFontSubset(targetOs: "win" | "mac" | "lin"): string[] {
+export function generateFontSubset(targetOs: "win" | "mac" | "lin"): string[] {
 	const full = FONTS[targetOs] ?? FONTS.mac;
 	const markers = MARKER_FONTS[targetOs];
 	const essential = new Set(markers);
@@ -237,7 +243,300 @@ export function fromPreset(
 	} catch {
 		if (preset.fonts) config.fonts = [...preset.fonts];
 	}
+	try {
+		config.voices = generateVoiceSubset(osToKey(osName));
+	} catch {
+		if (preset.speechVoices) {
+			config.voices = normalizePresetVoices(
+				preset.speechVoices,
+				osToKey(osName),
+			);
+		}
+	}
 	return config;
+}
+
+type PresetBundle = {
+	presets?: Record<string, FingerprintPreset[]>;
+};
+
+let presetsCache: PresetBundle | null = null;
+
+export function loadPresets(): PresetBundle | null {
+	if (presetsCache) return presetsCache;
+	const file = path.join(currentDir, "data-files", "fingerprint-presets.json");
+	if (!existsSync(file)) return null;
+	presetsCache = JSON.parse(readFileSync(file, "utf-8"));
+	return presetsCache;
+}
+
+export function getRandomPreset(
+	os?: string | string[],
+	_ffVersion?: string,
+): FingerprintPreset | undefined {
+	const bundle = loadPresets();
+	if (!bundle?.presets) return undefined;
+	const keys = os
+		? (Array.isArray(os) ? os : [os]).map((o) =>
+				o === "win" ? "windows" : o === "mac" ? "macos" : o === "lin" ? "linux" : o,
+			)
+		: ["macos", "windows", "linux"];
+	const candidates: FingerprintPreset[] = [];
+	for (const key of keys) {
+		candidates.push(...(bundle.presets[key] ?? []));
+	}
+	if (candidates.length === 0) return undefined;
+	return candidates[randint(0, candidates.length - 1)];
+}
+
+const ESSENTIAL_VOICES_MACOS = [
+	"Samantha",
+	"Alex",
+	"Fred",
+	"Victoria",
+	"Karen",
+	"Daniel",
+];
+
+const VOICE_URI_PREFIX = {
+	mac: "urn:moz-tts:osx:",
+	win: "urn:moz-tts:sapi:",
+	lin: "urn:moz-tts:speechd:",
+};
+
+function voiceUriSlug(name: string): string {
+	return name
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ".")
+		.replace(/^\.|\.$/g, "");
+}
+
+function voiceUri(
+	osKey: "win" | "mac" | "lin",
+	name: string,
+	lang: string,
+): string {
+	if (osKey === "lin") {
+		const escaped = [...name]
+			.map((ch) => {
+				if (ch === " ") return "%20";
+				if (ch.charCodeAt(0) <= 0x7f) return ch;
+				return [...new TextEncoder().encode(ch)]
+					.map((b) => `%${b.toString(16).toUpperCase().padStart(2, "0")}`)
+					.join("");
+			})
+			.join("");
+		return `${VOICE_URI_PREFIX.lin}${escaped}?${lang}`;
+	}
+	return `${VOICE_URI_PREFIX[osKey]}${voiceUriSlug(name)}`;
+}
+
+function parseVoiceEntry(
+	entry: string,
+	osKey: "win" | "mac" | "lin",
+): { name: string; lang: string; type: string } | null {
+	const last = entry.lastIndexOf(":");
+	if (last < 0) return null;
+	const vtype = entry.slice(last + 1);
+	const before = entry.slice(0, last);
+	const langsep = before.lastIndexOf(":");
+	if (langsep < 0) return null;
+	return {
+		name: before.slice(0, langsep),
+		lang: before.slice(langsep + 1),
+		type: vtype,
+	};
+}
+
+export function generateVoiceSubset(
+	targetOs: "win" | "mac" | "lin",
+	locale?: string,
+): any[] {
+	const file = path.join(currentDir, "data-files", "voices.json");
+	if (!existsSync(file)) return [];
+	const raw = JSON.parse(readFileSync(file, "utf-8")) as Record<string, string[]>;
+	const full = (raw[targetOs] ?? [])
+		.map((e) => parseVoiceEntry(e, targetOs))
+		.filter((v): v is NonNullable<typeof v> => !!v);
+	if (full.length === 0) return [];
+
+	let selected = full;
+	if (targetOs === "mac") {
+		const essential = new Set(ESSENTIAL_VOICES_MACOS);
+		const result = full.filter((v) => essential.has(v.name));
+		const rest = full.filter((v) => !essential.has(v.name));
+		const pct = 40 + Math.floor(Math.random() * 41);
+		const count = Math.round((pct / 100) * rest.length);
+		for (let i = rest.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			const a = rest[i]!;
+			rest[i] = rest[j]!;
+			rest[j] = a;
+		}
+		result.push(...rest.slice(0, count));
+		selected = result;
+	}
+
+	const voices = selected.map((v) => ({
+		name: v.name,
+		lang: v.lang,
+		voiceUri: voiceUri(targetOs, v.name, v.lang),
+		isDefault: false,
+		isLocalService: v.type === "local",
+	}));
+	if (voices.length > 0) {
+		const prefix = locale ? locale.split("-")[0]!.toLowerCase() : "en";
+		let idx = locale
+			? voices.findIndex((v) => v.lang.toLowerCase() === locale.toLowerCase())
+			: -1;
+		if (idx < 0) {
+			idx = voices.findIndex(
+				(v) => v.lang.split("-")[0]!.toLowerCase() === prefix,
+			);
+		}
+		voices[idx < 0 ? 0 : idx]!.isDefault = true;
+	}
+	return voices;
+}
+
+function normalizePresetVoices(
+	voices: any[],
+	targetOs: "win" | "mac" | "lin",
+): any[] {
+	const result: any[] = [];
+	for (const entry of voices) {
+		if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+			result.push(entry);
+			continue;
+		}
+		if (typeof entry !== "string") continue;
+		const parsed = parseVoiceEntry(entry, targetOs);
+		if (!parsed) continue;
+		result.push({
+			name: parsed.name,
+			lang: parsed.lang,
+			voiceUri: voiceUri(targetOs, parsed.name, parsed.lang),
+			isDefault: false,
+			isLocalService: parsed.type === "local",
+		});
+	}
+	if (result.length > 0 && !result.some((v) => v.isDefault)) {
+		result[0].isDefault = true;
+	}
+	return result;
+}
+
+export function clampScreenToDisplay(
+	config: Record<string, any>,
+	maxWidth?: number,
+	maxHeight?: number,
+): void {
+	for (const [axis, cap] of [
+		["width", maxWidth],
+		["height", maxHeight],
+	] as const) {
+		const screen = config[`screen.${axis}`];
+		if (!(screen && cap) || screen <= cap) continue;
+		const availKey =
+			axis === "width" ? "screen.availWidth" : "screen.availHeight";
+		const avail = config[availKey];
+		config[`screen.${axis}`] = cap;
+		if (avail) {
+			config[availKey] = Math.max(1, cap - Math.max(0, screen - avail));
+		}
+	}
+}
+
+export function applyConfigFixes(
+	config: Record<string, any>,
+	targetOs: "win" | "mac" | "lin",
+	parts: { navigator?: boolean; screen?: boolean; media?: boolean } = {},
+): void {
+	const {
+		navigator: fixNav = true,
+		screen: fixScreen = true,
+		media: fixMedia = true,
+	} = parts;
+	if (!fixNav && !fixScreen && !fixMedia) return;
+	if (fixNav && targetOs === "lin") {
+		const ua = String(config["navigator.userAgent"] ?? "");
+		let arch = "";
+		if (ua.includes("Linux x86_64")) arch = "Linux x86_64";
+		else if (ua.includes("Linux i686")) arch = "Linux i686";
+		if (arch) {
+			if (config["navigator.platform"] !== arch) {
+				config["navigator.platform"] = arch;
+			}
+			if (config["navigator.oscpu"] !== arch) {
+				config["navigator.oscpu"] = arch;
+			}
+		}
+	}
+
+	if (fixScreen) {
+		const sw = config["screen.width"];
+		const sh = config["screen.height"];
+		const aw = config["screen.availWidth"];
+		const ah = config["screen.availHeight"];
+		if (sw && sh && aw === sw && ah === sh) {
+			const taskbar = targetOs === "win" ? 40 : targetOs === "mac" ? 25 : 27;
+			const newAvail = sh - taskbar;
+			config["screen.availHeight"] = newAvail;
+			const oh = config["window.outerHeight"];
+			if (oh && oh > newAvail) {
+				const ih = config["window.innerHeight"];
+				const chrome = ih ? oh - ih : 0;
+				config["window.outerHeight"] = newAvail;
+				if (ih) config["window.innerHeight"] = newAvail - chrome;
+			}
+		}
+
+		for (const axis of ["Width", "Height"] as const) {
+			const dim = config[`screen.${axis.toLowerCase()}`];
+			const availKey = `screen.avail${axis}`;
+			const outerKey = `window.outer${axis}`;
+			const innerKey = `window.inner${axis}`;
+			let avail = config[availKey];
+			if (dim && avail && avail > dim) {
+				config[availKey] = dim;
+				avail = dim;
+			}
+			const outerCap = avail ?? dim;
+			const outer = config[outerKey];
+			const inner = config[innerKey];
+			if (outer && outerCap && outer > outerCap) {
+				const chrome = inner ? Math.max(0, outer - inner) : 0;
+				config[outerKey] = outerCap;
+				if (inner) config[innerKey] = Math.max(1, outerCap - chrome);
+			}
+			const outerClamped = config[outerKey] ?? outer;
+			const innerNow = config[innerKey];
+			if (innerNow && outerClamped && innerNow > outerClamped) {
+				config[innerKey] = outerClamped;
+			}
+		}
+
+		for (const [axis, posKey] of [
+			["Width", "window.screenX"],
+			["Height", "window.screenY"],
+		] as const) {
+			const dim = config[`screen.${axis.toLowerCase()}`];
+			const outer = config[`window.outer${axis}`];
+			const pos = config[posKey];
+			if (pos === undefined || !(dim && outer)) continue;
+			config[posKey] = Math.max(0, Math.min(pos, dim - outer));
+		}
+	}
+
+	if (
+		fixMedia &&
+		!Object.keys(config).some((k) => k.startsWith("mediaDevices:"))
+	) {
+		config["mediaDevices:enabled"] = true;
+		config["mediaDevices:micros"] = 1;
+		config["mediaDevices:webcams"] = 1;
+		config["mediaDevices:speakers"] = 0;
+	}
 }
 
 function buildInitScript(values: Record<string, any>): string {
@@ -308,10 +607,13 @@ export interface ContextFingerprintOptions {
 	preset?: FingerprintPreset;
 	os?: string | string[];
 	ffVersion?: string;
+	ff_version?: string;
 	webrtcIp?: string;
+	webrtc_ip?: string;
 	timezone?: string;
 	locale?: string;
 	configOverrides?: Record<string, any>;
+	config_overrides?: Record<string, any>;
 }
 
 export interface ContextFingerprint {
@@ -324,13 +626,11 @@ export interface ContextFingerprint {
 export async function generateContextFingerprint(
 	options: ContextFingerprintOptions = {},
 ): Promise<ContextFingerprint> {
-	const {
-		ffVersion,
-		webrtcIp,
-		timezone,
-		locale,
-		configOverrides,
-	} = options;
+	const ffVersion = options.ffVersion ?? options.ff_version;
+	const webrtcIp = options.webrtcIp ?? options.webrtc_ip;
+	const timezone = options.timezone;
+	const locale = options.locale;
+	const configOverrides = options.configOverrides ?? options.config_overrides;
 	let { preset, os } = options;
 
 	let config: Record<string, any>;
@@ -363,6 +663,13 @@ export async function generateContextFingerprint(
 				config.fonts = generateFontSubset(osToKey(osName));
 			} catch {
 				/* launch-level fonts remain */
+			}
+		}
+		if (!config.voices) {
+			try {
+				config.voices = generateVoiceSubset(osToKey(osName), locale);
+			} catch {
+				/* optional */
 			}
 		}
 		if (!config["navigator.oscpu"]) {
@@ -407,22 +714,33 @@ export async function generateContextFingerprint(
 		config["locale:language"] = parts[0];
 		if (parts[1]) config["locale:region"] = parts[1];
 	}
+	const targetOs = osToKey(
+		platformToOs(String(config["navigator.platform"] ?? "")),
+	);
+	if (!config.voices) {
+		try {
+			config.voices = generateVoiceSubset(targetOs, locale);
+		} catch {
+			/* optional */
+		}
+	}
+	applyConfigFixes(config, targetOs);
 	if (configOverrides) Object.assign(config, configOverrides);
 
 	const initValues: Record<string, any> = {
 		fontSpacingSeed: config["fonts:spacing_seed"],
 		audioFingerprintSeed: config["audio:seed"],
 		canvasSeed: config["canvas:seed"],
-		navigatorPlatform: nav.platform,
+		navigatorPlatform: config["navigator.platform"] ?? nav.platform,
 		navigatorOscpu: config["navigator.oscpu"],
 		navigatorUserAgent: config["navigator.userAgent"],
 		hardwareConcurrency:
-			nav.hardwareConcurrency ?? config["navigator.hardwareConcurrency"],
+			config["navigator.hardwareConcurrency"] ?? nav.hardwareConcurrency,
 		webglVendor: webgl.unmaskedVendor ?? config["webGl:vendor"],
 		webglRenderer: webgl.unmaskedRenderer ?? config["webGl:renderer"],
-		screenWidth: screen.width,
-		screenHeight: screen.height,
-		screenColorDepth: screen.colorDepth,
+		screenWidth: config["screen.width"] ?? screen.width,
+		screenHeight: config["screen.height"] ?? screen.height,
+		screenColorDepth: config["screen.colorDepth"] ?? screen.colorDepth,
 		timezone:
 			typeof preset?.timezone === "string" ? preset.timezone : config.timezone,
 		fontList: config.fonts,

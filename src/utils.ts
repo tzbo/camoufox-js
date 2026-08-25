@@ -22,9 +22,16 @@ import {
 	UnknownProperty,
 } from "./exceptions.js";
 import {
+	applyConfigFixes,
+	clampScreenToDisplay,
 	fromBrowserforge,
+	fromPreset,
 	generateFingerprint,
+	generateFontSubset,
+	generateVoiceSubset,
+	getRandomPreset,
 	SUPPORTED_OS,
+	type FingerprintPreset,
 } from "./fingerprints.js";
 import { publicIP, validIPv4, validIPv6 } from "./ip.js";
 import { geoipAllowed, getGeolocation, handleLocales } from "./locale.js";
@@ -477,6 +484,20 @@ export interface LaunchOptions {
 	 */
 	fingerprint?: Fingerprint;
 
+	/** Opt into real fingerprint presets instead of BrowserForge.
+	 * `true` picks a random bundled preset; pass a preset dict directly.
+	 */
+	fingerprint_preset?: boolean | FingerprintPreset;
+
+	/** Allow addons to open new tabs. */
+	allow_addon_new_tab?: boolean;
+
+	/** Named GeoIP database (Python only). JS always uses MaxMind. */
+	geoip_db?: string;
+
+	/** Installed browser version selector (Python multiversion). Unused in JS. */
+	browser?: string;
+
 	/** Firefox version to use. Defaults to the current Camoufox version.
 	 * To prevent leaks, only use this for special cases.
 	 */
@@ -582,9 +603,11 @@ export async function launchOptions({
 	screen,
 	window,
 	fingerprint,
+	fingerprint_preset,
 	ff_version,
 	headless,
 	main_world_eval,
+	allow_addon_new_tab,
 	executable_path,
 	firefox_user_prefs,
 	proxy,
@@ -594,6 +617,8 @@ export async function launchOptions({
 	i_know_what_im_doing,
 	debug,
 	virtual_display,
+	geoip_db: _geoip_db,
+	browser: _browser,
 	...launch_options
 }: Omit<LaunchOptions, "headless"> & {
 	headless?: boolean;
@@ -621,7 +646,9 @@ export async function launchOptions({
 		i_know_what_im_doing = false;
 	}
 	if (!env) {
-		env = process.env as Record<string, string | number | boolean>;
+		env = { ...process.env } as Record<string, string | number | boolean>;
+	} else {
+		env = { ...env };
 	}
 	if (typeof executable_path === "string") {
 		// Convert executable path to a Path object
@@ -631,12 +658,19 @@ export async function launchOptions({
 	// Handle virtual display
 	if (virtual_display) {
 		env.DISPLAY = virtual_display;
+		env.GDK_BACKEND = "x11";
+		delete env.WAYLAND_DISPLAY;
+		env.MOZ_ENABLE_WAYLAND = "0";
 	}
 
 	// Warn the user for manual config settings
 	if (!i_know_what_im_doing) {
 		warnManualConfig(config);
 	}
+
+	const userSetNavigator = isDomainSet(config, "navigator.");
+	const userSetScreenWindow = isDomainSet(config, "screen.", "window.");
+	const userSetMediaDevices = isDomainSet(config, "mediaDevices:");
 
 	const operatingSystems = validateOS(os);
 
@@ -663,21 +697,34 @@ export async function launchOptions({
 		ff_version_str = installedVerStr().split(".", 1)[0];
 	}
 
-	// Generate a fingerprint
-	if (!fingerprint) {
-		fingerprint = generateFingerprint(window, {
-			screen: screen || getScreenCons(headlessBoolean || "DISPLAY" in env),
-			operatingSystems,
-		});
-	} else {
-		// Or use the one passed by the user
+	let usedPreset = false;
+	if (fingerprint) {
 		if (!i_know_what_im_doing) {
 			checkCustomFingerprint(fingerprint);
 		}
+	} else if (fingerprint_preset != null) {
+		const preset =
+			typeof fingerprint_preset === "object"
+				? fingerprint_preset
+				: getRandomPreset(os, ff_version_str);
+		if (preset) {
+			mergeInto(config, fromPreset(preset, ff_version_str));
+			usedPreset = true;
+		}
 	}
 
-	// Inject the fingerprint into the config
-	mergeInto(config, fromBrowserforge(fingerprint, ff_version_str));
+	const screenCons = screen || getScreenCons(headlessBoolean || "DISPLAY" in env);
+
+	if (!usedPreset && !fingerprint) {
+		fingerprint = generateFingerprint(window, {
+			screen: screenCons,
+			operatingSystems,
+		});
+	}
+
+	if (!usedPreset && fingerprint) {
+		mergeInto(config, fromBrowserforge(fingerprint, ff_version_str));
+	}
 
 	// Add seeds (BrowserForge doesn't generate these). Mirrors fingerprints.py,
 	// which seeds these right after from_browserforge() with setdefault. Range is
@@ -699,8 +746,26 @@ export async function launchOptions({
 
 	const targetOS = getTargetOS(config);
 
-	// Set a random window.history.length
-	setInto(config, "window.history.length", Math.floor(Math.random() * 5) + 1);
+	if (!userSetNavigator || !userSetScreenWindow || !userSetMediaDevices) {
+		if (
+			!userSetScreenWindow &&
+			headlessBoolean === false &&
+			!virtual_display &&
+			screenCons
+		) {
+			clampScreenToDisplay(
+				config,
+				screenCons.maxWidth,
+				screenCons.maxHeight,
+			);
+		}
+		applyConfigFixes(config, targetOS, {
+			navigator: !userSetNavigator,
+			screen: !userSetScreenWindow,
+			media:
+				!userSetMediaDevices && "mediaDevices:enabled" in knownProperties,
+		});
+	}
 
 	// Update fonts list
 	if (fonts) {
@@ -718,8 +783,20 @@ export async function launchOptions({
 				"No custom fonts were passed, but `custom_fonts_only` is enabled.",
 			);
 		}
-	} else {
-		updateFonts(config, targetOS);
+	} else if (!config.fonts || !config.fonts.length) {
+		try {
+			config.fonts = generateFontSubset(targetOS);
+		} catch {
+			updateFonts(config, targetOS);
+		}
+	}
+
+	if ("voices" in knownProperties && !("voices" in config)) {
+		try {
+			config.voices = generateVoiceSubset(targetOS);
+		} catch {
+			/* optional */
+		}
 	}
 
 	// Handle proxy
@@ -776,6 +853,10 @@ export async function launchOptions({
 		setInto(config, "allowMainWorld", true);
 	}
 
+	if (allow_addon_new_tab && "allowAddonNewtab" in knownProperties) {
+		setInto(config, "allowAddonNewtab", true);
+	}
+
 	// Set Firefox user preferences
 	if (block_images) {
 		LeakWarning.warn("block_images", i_know_what_im_doing);
@@ -799,6 +880,16 @@ export async function launchOptions({
 		let webgl_fp;
 		if (webgl_config) {
 			webgl_fp = await sampleWebGL(targetOS, ...webgl_config);
+		} else if (config["webGl:vendor"] && config["webGl:renderer"]) {
+			try {
+				webgl_fp = await sampleWebGL(
+					targetOS,
+					config["webGl:vendor"],
+					config["webGl:renderer"],
+				);
+			} catch {
+				webgl_fp = await sampleWebGL(targetOS);
+			}
 		} else {
 			webgl_fp = await sampleWebGL(targetOS);
 		}
@@ -813,12 +904,6 @@ export async function launchOptions({
 		});
 	}
 
-	// Canvas anti-fingerprinting
-	mergeInto(config, {
-		"canvas:aaOffset": Math.floor(Math.random() * 101) - 50, // nosec
-		"canvas:aaCapOffset": true,
-	});
-
 	// Cache previous pages, requests, etc (uses more memory)
 	if (enable_cache) {
 		mergeInto(firefox_user_prefs, CACHE_PREFS);
@@ -828,6 +913,14 @@ export async function launchOptions({
 	if (debug) {
 		console.debug("[DEBUG] Config:");
 		console.debug(config);
+	}
+
+	if (!("voices" in knownProperties)) delete config.voices;
+	if (!("allowAddonNewtab" in knownProperties)) delete config.allowAddonNewtab;
+	if (!("mediaDevices:enabled" in knownProperties)) {
+		for (const key of Object.keys(config)) {
+			if (key.startsWith("mediaDevices:")) delete config[key];
+		}
 	}
 
 	// Validate the config
