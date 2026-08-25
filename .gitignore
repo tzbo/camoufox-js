@@ -3,4 +3,3 @@ yarn.lock
 .yarn
 scripts/
 *.mmdb
-dist/
