@@ -1,10 +1,17 @@
 import {
 	type Browser,
 	type BrowserContext,
+	type BrowserContextOptions,
 	type BrowserType,
 	firefox,
 } from "playwright-core";
 
+import {
+	generateContextFingerprint,
+	type FingerprintPreset,
+} from "./fingerprints.js";
+import { getGeolocation } from "./locale.js";
+import { ProxyHelper, publicIP } from "./ip.js";
 import {
 	attachNoViewportDefault,
 	type LaunchOptions,
@@ -79,4 +86,82 @@ export async function NewBrowser<
 		attachNoViewportDefault(browser);
 	}
 	return syncAttachVD(browser, virtualDisplay);
+}
+
+export interface NewContextOptions extends BrowserContextOptions {
+	preset?: FingerprintPreset;
+	os?: string | string[];
+	ff_version?: string;
+	webrtc_ip?: string;
+	timezone?: string;
+	locale?: string;
+	config_overrides?: Record<string, any>;
+}
+
+async function resolveProxyGeo(proxy: {
+	server: string;
+	username?: string;
+	password?: string;
+}): Promise<{ ip?: string; timezone?: string }> {
+	try {
+		const ip = await publicIP(ProxyHelper.asString(proxy));
+		try {
+			const geo = await getGeolocation(ip);
+			return { ip, timezone: geo.timezone };
+		} catch {
+			return { ip };
+		}
+	} catch {
+		return {};
+	}
+}
+
+export async function NewContext(
+	browser: Browser,
+	options: NewContextOptions = {},
+): Promise<BrowserContext> {
+	const {
+		preset,
+		os,
+		ff_version,
+		webrtc_ip,
+		timezone,
+		locale,
+		config_overrides,
+		proxy,
+		geolocation,
+		...contextKwargs
+	} = options;
+
+	let webrtcIp = webrtc_ip;
+	const extras: BrowserContextOptions = { ...contextKwargs };
+	if (proxy && (!webrtcIp || !extras.timezoneId)) {
+		const geo = await resolveProxyGeo(proxy);
+		if (!webrtcIp) webrtcIp = geo.ip;
+		if (!extras.timezoneId && geo.timezone) extras.timezoneId = geo.timezone;
+	}
+
+	const fp = await generateContextFingerprint({
+		preset,
+		os,
+		ffVersion: ff_version,
+		webrtcIp,
+		timezone,
+		locale,
+		configOverrides: config_overrides,
+	});
+
+	const opts: BrowserContextOptions = {
+		...fp.contextOptions,
+		...extras,
+	};
+	if (proxy) opts.proxy = proxy;
+	if (geolocation) {
+		opts.geolocation = geolocation;
+		opts.permissions ??= ["geolocation"];
+	}
+
+	const context = await browser.newContext(opts);
+	await context.addInitScript(fp.initScript);
+	return context;
 }
