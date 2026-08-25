@@ -4,7 +4,8 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"scripts": {
-		"build": "rimraf dist && tsc && pnpm copy-files",
+		"build": "rimraf dist && tsc && cp -r src/data-files dist/data-files",
+		"prepare": "npm run build",
 		"test": "vitest",
 		"copy-files": "cp -r src/data-files dist/data-files",
 		"check": "biome check"
@@ -51,13 +52,13 @@
 		"@types/language-tags": "^1.0.4",
 		"@types/node": "^24.0.0",
 		"@types/xml2js": "^0.4.14",
-		"playwright-core": "<1.61.0",
+		"playwright-core": ">=1.52.0",
 		"rimraf": "^6.0.1",
 		"typescript": "^5.8.3",
 		"vitest": "^4.0.0"
 	},
 	"peerDependencies": {
-		"playwright-core": "<1.61.0"
+		"playwright-core": ">=1.52.0"
 	},
 	"devEngines": {
 		"packageManager": {
