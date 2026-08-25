@@ -17,3 +17,11 @@ export type {
 } from "./fingerprints.js";
 export { type LaunchOptions, launchOptions } from "./utils.js";
 export { DefaultAddons } from "./addons.js";
+export type {
+	Browser,
+	BrowserContext,
+	BrowserContextOptions,
+	Page,
+	Cookie,
+	Response,
+} from "playwright-core";

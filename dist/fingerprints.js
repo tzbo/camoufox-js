@@ -520,7 +520,12 @@ export async function generateContextFingerprint(options = {}) {
         const operatingSystems = os
             ? (Array.isArray(os) ? os : [os])
             : undefined;
-        const fp = generateFingerprint(undefined, operatingSystems ? { operatingSystems } : undefined);
+        const genOpts = {};
+        if (operatingSystems)
+            genOpts.operatingSystems = operatingSystems;
+        if (options.screen)
+            genOpts.screen = options.screen;
+        const fp = generateFingerprint(undefined, Object.keys(genOpts).length ? genOpts : undefined);
         config = fromBrowserforge(fp, ffVersion);
         config["fonts:spacing_seed"] ??= randint(1, 4_294_967_295);
         config["audio:seed"] ??= randint(1, 4_294_967_295);

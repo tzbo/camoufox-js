@@ -5,3 +5,4 @@ export { generateContextFingerprint, fromPreset, fromBrowserforge, generateFinge
 export type { ContextFingerprint, ContextFingerprintOptions, FingerprintPreset, } from "./fingerprints.js";
 export { type LaunchOptions, launchOptions } from "./utils.js";
 export { DefaultAddons } from "./addons.js";
+export type { Browser, BrowserContext, BrowserContextOptions, Page, Cookie, Response, } from "playwright-core";

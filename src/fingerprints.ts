@@ -612,6 +612,7 @@ export interface ContextFingerprintOptions {
 	webrtc_ip?: string;
 	timezone?: string;
 	locale?: string;
+	screen?: FingerprintGeneratorOptions["screen"];
 	configOverrides?: Record<string, any>;
 	config_overrides?: Record<string, any>;
 }
@@ -647,9 +648,12 @@ export async function generateContextFingerprint(
 		const operatingSystems = os
 			? ((Array.isArray(os) ? os : [os]) as FingerprintGeneratorOptions["operatingSystems"])
 			: undefined;
+		const genOpts: Partial<FingerprintGeneratorOptions> = {};
+		if (operatingSystems) genOpts.operatingSystems = operatingSystems;
+		if (options.screen) genOpts.screen = options.screen;
 		const fp = generateFingerprint(
 			undefined,
-			operatingSystems ? { operatingSystems } : undefined,
+			Object.keys(genOpts).length ? genOpts : undefined,
 		);
 		config = fromBrowserforge(fp, ffVersion);
 		config["fonts:spacing_seed"] ??= randint(1, 4_294_967_295);

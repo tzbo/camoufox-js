@@ -33,6 +33,7 @@ export interface ContextFingerprintOptions {
     webrtc_ip?: string;
     timezone?: string;
     locale?: string;
+    screen?: FingerprintGeneratorOptions["screen"];
     configOverrides?: Record<string, any>;
     config_overrides?: Record<string, any>;
 }
