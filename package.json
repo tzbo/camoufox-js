@@ -4,10 +4,10 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"scripts": {
-		"build": "rimraf dist && tsc && cp -r src/data-files dist/data-files",
+		"build": "rimraf dist && tsc && npm run copy-files",
 		"prepare": "npm run build",
 		"test": "vitest",
-		"copy-files": "cp -r src/data-files dist/data-files",
+		"copy-files": "node -e \"require('fs').cpSync('src/data-files','dist/data-files',{recursive:true})\"",
 		"check": "biome check"
 	},
 	"bin": "dist/__main__.js",
