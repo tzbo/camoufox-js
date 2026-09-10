@@ -83,9 +83,7 @@ function getImpit(proxy) {
 export async function publicIP(proxy) {
     const URLS = [
         "http://ip.3322.net",
-        "http://members.3322.org/dyndns/getip",
         "http://api.ipify.org",
-        "http://icanhazip.com",
         "http://ifconfig.me/ip",
         "https://api.ip.sb/ip",
     ];
