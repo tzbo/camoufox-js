@@ -90,7 +90,7 @@ function getImpit(proxy?: string): Impit {
 	}
 	const impit = new Impit({
 		proxyUrl: proxy,
-		timeout: 5000,
+		timeout: 15000,
 	});
 	impitCache.set(key, impit);
 	if (impitCache.size > IMPIT_CACHE_MAX) {
@@ -101,12 +101,10 @@ function getImpit(proxy?: string): Impit {
 
 export async function publicIP(proxy?: string): Promise<string> {
 	const URLS = [
-		"https://api.ipify.org",
-		"https://checkip.amazonaws.com",
-		"https://ipinfo.io/ip",
-		"https://icanhazip.com",
-		"https://ifconfig.co/ip",
-		"https://ipecho.net/plain",
+		"http://ip.3322.net",
+		"http://api.ipify.org",
+		"http://ifconfig.me/ip",
+		"https://api.ip.sb/ip",
 	];
 
 	const errors = [];
