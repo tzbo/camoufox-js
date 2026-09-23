@@ -48,9 +48,10 @@ export declare class CamoufoxFetcher extends GitHubDownloader {
     static getPlatformArch(): string;
     fetchLatest(): Promise<void>;
     static downloadFile(url: string): Promise<Buffer>;
-    extractZip(zipFile: string | Buffer): Promise<void>;
+    extractZip(zipFile: string | Buffer, destDir?: string): Promise<void>;
     static cleanup(): boolean;
-    setVersion(): void;
+    setVersion(destDir?: string): void;
+    private static removeLeftovers;
     install(): Promise<void>;
     get url(): string;
     get version(): string;
