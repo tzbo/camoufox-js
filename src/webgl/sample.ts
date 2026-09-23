@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { OS_ARCH_MATRIX } from "../pkgman.js";
 
 declare const Bun: unknown;
-declare const Deno: unknown;
 
 interface SqliteDatabase {
 	prepare(query: string): { all(...params: any[]): any[] };
@@ -18,12 +17,9 @@ async function openDatabase(pathName: string): Promise<SqliteDatabase> {
 			// @ts-expect-error - bun:sqlite only exists in Bun runtime
 			const { Database: BunDatabase } = await import("bun:sqlite");
 			DatabaseConstructor = BunDatabase;
-		} else if (typeof Deno !== "undefined") {
+		} else {
 			const { DatabaseSync } = await import("node:sqlite");
 			DatabaseConstructor = DatabaseSync;
-		} else {
-			const { default: BetterSqlite3 } = await import("better-sqlite3");
-			DatabaseConstructor = BetterSqlite3;
 		}
 	}
 	return new DatabaseConstructor!(pathName);

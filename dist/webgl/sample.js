@@ -9,13 +9,9 @@ async function openDatabase(pathName) {
             const { Database: BunDatabase } = await import("bun:sqlite");
             DatabaseConstructor = BunDatabase;
         }
-        else if (typeof Deno !== "undefined") {
+        else {
             const { DatabaseSync } = await import("node:sqlite");
             DatabaseConstructor = DatabaseSync;
-        }
-        else {
-            const { default: BetterSqlite3 } = await import("better-sqlite3");
-            DatabaseConstructor = BetterSqlite3;
         }
     }
     return new DatabaseConstructor(pathName);
