@@ -1,6 +1,6 @@
 {
 	"name": "camoufox-js",
-	"version": "0.12.0",
+	"version": "0.12.1",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"scripts": {
@@ -49,13 +49,13 @@
 		"@types/language-tags": "^1.0.4",
 		"@types/node": "^24.0.0",
 		"@types/xml2js": "^0.4.14",
-		"playwright-core": ">=1.52.0",
+		"playwright-core": "<1.63.0",
 		"rimraf": "^6.0.1",
 		"typescript": "^5.8.3",
 		"vitest": "^4.0.0"
 	},
 	"peerDependencies": {
-		"playwright-core": ">=1.52.0"
+		"playwright-core": "<1.63.0"
 	},
 	"devEngines": {
 		"packageManager": {
