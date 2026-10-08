@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -56,6 +57,16 @@ const LAUNCH_FILE = {
     mac: "../MacOS/camoufox",
     lin: "camoufox-bin",
 };
+function isPlaywright161OrNewer() {
+    try {
+        const { version } = createRequire(import.meta.url)("playwright-core/package.json");
+        const [major, minor] = version.split(".").map(Number);
+        return major > 1 || (major === 1 && minor >= 61);
+    }
+    catch {
+        return false;
+    }
+}
 class Version {
     release;
     version;
@@ -90,7 +101,7 @@ class Version {
         return false;
     }
     isSupported() {
-        return VERSION_MIN.lessThan(this) && this.lessThan(VERSION_MAX);
+        return !this.lessThan(VERSION_MIN) && this.lessThan(VERSION_MAX);
     }
     static fromPath(filePath = INSTALL_DIR) {
         const versionPath = path.join(filePath.toString(), "version.json");
@@ -105,12 +116,15 @@ class Version {
     }
     static buildMinMax() {
         return [
-            new Version(CONSTRAINTS.MIN_VERSION),
+            new Version(isPlaywright161OrNewer()
+                ? CONSTRAINTS.PLAYWRIGHT_1_61_MIN_VERSION
+                : CONSTRAINTS.MIN_VERSION),
             new Version(CONSTRAINTS.MAX_VERSION),
         ];
     }
 }
 const [VERSION_MIN, VERSION_MAX] = Version.buildMinMax();
+const SUPPORTED_RANGE = `>=${VERSION_MIN.release}, <${VERSION_MAX.release}`;
 export class GitHubDownloader {
     githubRepo;
     apiUrl;
@@ -181,7 +195,7 @@ export class CamoufoxFetcher extends GitHubDownloader {
         return [version, asset.browser_download_url];
     }
     missingAssetError() {
-        throw new MissingRelease(`No matching release found for ${OS_NAME} ${this.arch} in the supported range: (${CONSTRAINTS.asRange()}). Please update the library.`);
+        throw new MissingRelease(`No matching release found for ${OS_NAME} ${this.arch} in the supported range: (${SUPPORTED_RANGE}). Please update the library.`);
     }
     static getPlatformArch() {
         const platArch = os.arch().toLowerCase();
@@ -330,9 +344,7 @@ export function camoufoxPath(downloadIfMissing = true) {
         return INSTALL_DIR;
     }
     else {
-        if (!downloadIfMissing) {
-            throw new UnsupportedVersion("Camoufox executable is outdated.");
-        }
+        throw new UnsupportedVersion(`Camoufox v${installedVerStr()} is not supported by this library (supported range: ${SUPPORTED_RANGE}). Please run \`camoufox fetch\` to install a supported version.`);
     }
     // Install and recheck
     const fetcher = new CamoufoxFetcher();
