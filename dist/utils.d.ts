@@ -2,7 +2,7 @@ import { type PathLike } from "node:fs";
 import type { Fingerprint, FingerprintGeneratorOptions } from "fingerprint-generator";
 import type { LaunchOptions as PlaywrightLaunchOptions } from "playwright-core";
 import { type DefaultAddons } from "./addons.js";
-import { SUPPORTED_OS, type FingerprintPreset } from "./fingerprints.js";
+import { type FingerprintPreset, SUPPORTED_OS } from "./fingerprints.js";
 import type { VirtualDisplay } from "./virtdisplay.js";
 type Screen = FingerprintGeneratorOptions["screen"];
 export declare function getAsBooleanFromENV(name: string, defaultValue?: boolean | undefined): boolean;

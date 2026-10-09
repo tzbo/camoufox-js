@@ -19,11 +19,11 @@ import {
 	InvalidOS,
 	InvalidPropertyType,
 	NonFirefoxFingerprint,
-	UnknownProperty,
 } from "./exceptions.js";
 import {
 	applyConfigFixes,
 	clampScreenToDisplay,
+	type FingerprintPreset,
 	fromBrowserforge,
 	fromPreset,
 	generateFingerprint,
@@ -31,7 +31,6 @@ import {
 	generateVoiceSubset,
 	getRandomPreset,
 	SUPPORTED_OS,
-	type FingerprintPreset,
 } from "./fingerprints.js";
 import { publicIP, validIPv4, validIPv6 } from "./ip.js";
 import { geoipAllowed, getGeolocation, handleLocales } from "./locale.js";
@@ -98,9 +97,10 @@ export function getAsBooleanFromENV(
 interface Property {
 	property: string;
 	type: string;
+	removed?: string;
 }
 
-function loadProperties(filePath?: PathLike): Record<string, string> {
+function loadProperties(filePath?: PathLike): Record<string, Property> {
 	let propFile: string;
 	filePath = filePath?.toString();
 	if (filePath) {
@@ -114,11 +114,19 @@ function loadProperties(filePath?: PathLike): Record<string, string> {
 
 	return propDict.reduce(
 		(acc, prop) => {
-			acc[prop.property] = prop.type;
+			acc[prop.property] = prop;
 			return acc;
 		},
-		{} as Record<string, string>,
+		{} as Record<string, Property>,
 	);
+}
+
+function isLiveProperty(
+	properties: Record<string, Property>,
+	key: string,
+): boolean {
+	const entry = properties[key];
+	return !!entry && entry.removed === undefined;
 }
 
 interface ConfigMap {
@@ -130,18 +138,19 @@ interface EnvVars {
 }
 
 function validateConfig(
-	configMap: Record<string, string>,
-	propertyTypes: Record<string, string>,
+	configMap: Record<string, any>,
+	properties: Record<string, Property>,
 ): void {
-	for (const [key, value] of Object.entries(configMap)) {
-		const expectedType = propertyTypes[key];
-		if (!expectedType) {
-			throw new UnknownProperty(`Unknown property ${key} in config`);
+	for (const key of Object.keys(configMap)) {
+		const entry = properties[key];
+		if (!entry || entry.removed !== undefined) {
+			delete configMap[key];
+			continue;
 		}
 
-		if (!validateType(value, expectedType)) {
+		if (!validateType(configMap[key], entry.type)) {
 			throw new InvalidPropertyType(
-				`Invalid type for property ${key}. Expected ${expectedType}, got ${typeof value}`,
+				`Invalid type for property ${key}. Expected ${entry.type}, got ${typeof configMap[key]}`,
 			);
 		}
 	}
@@ -713,7 +722,8 @@ export async function launchOptions({
 		}
 	}
 
-	const screenCons = screen || getScreenCons(headlessBoolean || "DISPLAY" in env);
+	const screenCons =
+		screen || getScreenCons(headlessBoolean || "DISPLAY" in env);
 
 	if (!usedPreset && !fingerprint) {
 		fingerprint = generateFingerprint(window, {
@@ -739,7 +749,7 @@ export async function launchOptions({
 		Math.floor(Math.random() * (max - min + 1)) + min;
 	const knownProperties = loadProperties(executable_path);
 	for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
-		if (seed in knownProperties) {
+		if (isLiveProperty(knownProperties, seed)) {
 			setInto(config, seed, randint(1, 4_294_967_295));
 		}
 	}
@@ -753,17 +763,14 @@ export async function launchOptions({
 			!virtual_display &&
 			screenCons
 		) {
-			clampScreenToDisplay(
-				config,
-				screenCons.maxWidth,
-				screenCons.maxHeight,
-			);
+			clampScreenToDisplay(config, screenCons.maxWidth, screenCons.maxHeight);
 		}
 		applyConfigFixes(config, targetOS, {
 			navigator: !userSetNavigator,
 			screen: !userSetScreenWindow,
 			media:
-				!userSetMediaDevices && "mediaDevices:enabled" in knownProperties,
+				!userSetMediaDevices &&
+				isLiveProperty(knownProperties, "mediaDevices:enabled"),
 		});
 	}
 
@@ -788,7 +795,7 @@ export async function launchOptions({
 		config.fonts = Array.from(new Set([...(config.fonts || []), ...fonts]));
 	}
 
-	if ("voices" in knownProperties && !("voices" in config)) {
+	if (isLiveProperty(knownProperties, "voices") && !("voices" in config)) {
 		try {
 			config.voices = generateVoiceSubset(targetOS);
 		} catch {
@@ -850,7 +857,10 @@ export async function launchOptions({
 		setInto(config, "allowMainWorld", true);
 	}
 
-	if (allow_addon_new_tab && "allowAddonNewtab" in knownProperties) {
+	if (
+		allow_addon_new_tab &&
+		isLiveProperty(knownProperties, "allowAddonNewtab")
+	) {
 		setInto(config, "allowAddonNewtab", true);
 	}
 
@@ -912,9 +922,10 @@ export async function launchOptions({
 		console.debug(config);
 	}
 
-	if (!("voices" in knownProperties)) delete config.voices;
-	if (!("allowAddonNewtab" in knownProperties)) delete config.allowAddonNewtab;
-	if (!("mediaDevices:enabled" in knownProperties)) {
+	if (!isLiveProperty(knownProperties, "voices")) delete config.voices;
+	if (!isLiveProperty(knownProperties, "allowAddonNewtab"))
+		delete config.allowAddonNewtab;
+	if (!isLiveProperty(knownProperties, "mediaDevices:enabled")) {
 		for (const key of Object.keys(config)) {
 			if (key.startsWith("mediaDevices:")) delete config[key];
 		}

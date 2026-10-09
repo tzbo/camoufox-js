@@ -8,8 +8,6 @@ export default {
 		userAgent: "navigator.userAgent",
 		// userAgentData not in Firefox
 		doNotTrack: "navigator.doNotTrack",
-		appCodeName: "navigator.appCodeName",
-		appName: "navigator.appName",
 		appVersion: "navigator.appVersion",
 		oscpu: "navigator.oscpu",
 		// webdriver is always True
@@ -19,7 +17,6 @@ export default {
 		platform: "navigator.platform",
 		// deviceMemory not in Firefox
 		hardwareConcurrency: "navigator.hardwareConcurrency",
-		product: "navigator.product",
 		// Never override productSub #105
 		// productSub: "navigator.productSub",
 		// vendor is not necessary
@@ -42,12 +39,8 @@ export default {
 		colorDepth: "screen.colorDepth",
 		pixelDepth: "screen.pixelDepth",
 		// devicePixelRatio is not recommended. Any value other than 1.0 is suspicious.
-		pageXOffset: "screen.pageXOffset",
-		pageYOffset: "screen.pageYOffset",
 		outerHeight: "window.outerHeight",
 		outerWidth: "window.outerWidth",
-		innerHeight: "window.innerHeight",
-		innerWidth: "window.innerWidth",
 		screenX: "window.screenX",
 		screenY: "window.screenY",
 		// Tends to generate out of bounds (network inconsistencies):
@@ -64,12 +57,6 @@ export default {
 		// headers.User-Agent is redundant with navigator.userAgent
 		// headers.Accept-Language is redundant with locale:*
 		"Accept-Encoding": "headers.Accept-Encoding",
-	},
-
-	battery: {
-		charging: "battery:charging",
-		chargingTime: "battery:chargingTime",
-		dischargingTime: "battery:dischargingTime",
 	},
 
 	// Unsupported: videoCodecs, audioCodecs, pluginsData, multimediaDevices

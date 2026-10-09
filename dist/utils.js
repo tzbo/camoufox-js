@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { UAParser } from "ua-parser-js";
 import { addDefaultAddons, confirmPaths, } from "./addons.js";
-import { InvalidOS, InvalidPropertyType, NonFirefoxFingerprint, UnknownProperty, } from "./exceptions.js";
+import { InvalidOS, InvalidPropertyType, NonFirefoxFingerprint, } from "./exceptions.js";
 import { applyConfigFixes, clampScreenToDisplay, fromBrowserforge, fromPreset, generateFingerprint, generateFontSubset, generateVoiceSubset, getRandomPreset, SUPPORTED_OS, } from "./fingerprints.js";
 import { publicIP, validIPv4, validIPv6 } from "./ip.js";
 import { geoipAllowed, getGeolocation, handleLocales } from "./locale.js";
@@ -70,18 +70,23 @@ function loadProperties(filePath) {
     const propData = readFileSync(propFile).toString();
     const propDict = JSON.parse(propData);
     return propDict.reduce((acc, prop) => {
-        acc[prop.property] = prop.type;
+        acc[prop.property] = prop;
         return acc;
     }, {});
 }
-function validateConfig(configMap, propertyTypes) {
-    for (const [key, value] of Object.entries(configMap)) {
-        const expectedType = propertyTypes[key];
-        if (!expectedType) {
-            throw new UnknownProperty(`Unknown property ${key} in config`);
+function isLiveProperty(properties, key) {
+    const entry = properties[key];
+    return !!entry && entry.removed === undefined;
+}
+function validateConfig(configMap, properties) {
+    for (const key of Object.keys(configMap)) {
+        const entry = properties[key];
+        if (!entry || entry.removed !== undefined) {
+            delete configMap[key];
+            continue;
         }
-        if (!validateType(value, expectedType)) {
-            throw new InvalidPropertyType(`Invalid type for property ${key}. Expected ${expectedType}, got ${typeof value}`);
+        if (!validateType(configMap[key], entry.type)) {
+            throw new InvalidPropertyType(`Invalid type for property ${key}. Expected ${entry.type}, got ${typeof configMap[key]}`);
         }
     }
 }
@@ -443,7 +448,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     const randint = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
     const knownProperties = loadProperties(executable_path);
     for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
-        if (seed in knownProperties) {
+        if (isLiveProperty(knownProperties, seed)) {
             setInto(config, seed, randint(1, 4_294_967_295));
         }
     }
@@ -458,7 +463,8 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
         applyConfigFixes(config, targetOS, {
             navigator: !userSetNavigator,
             screen: !userSetScreenWindow,
-            media: !userSetMediaDevices && "mediaDevices:enabled" in knownProperties,
+            media: !userSetMediaDevices &&
+                isLiveProperty(knownProperties, "mediaDevices:enabled"),
         });
     }
     if (custom_fonts_only) {
@@ -482,7 +488,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     if (fonts && fonts.length && !custom_fonts_only) {
         config.fonts = Array.from(new Set([...(config.fonts || []), ...fonts]));
     }
-    if ("voices" in knownProperties && !("voices" in config)) {
+    if (isLiveProperty(knownProperties, "voices") && !("voices" in config)) {
         try {
             config.voices = generateVoiceSubset(targetOS);
         }
@@ -534,7 +540,8 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     if (main_world_eval) {
         setInto(config, "allowMainWorld", true);
     }
-    if (allow_addon_new_tab && "allowAddonNewtab" in knownProperties) {
+    if (allow_addon_new_tab &&
+        isLiveProperty(knownProperties, "allowAddonNewtab")) {
         setInto(config, "allowAddonNewtab", true);
     }
     // Set Firefox user preferences
@@ -590,11 +597,11 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
         console.debug("[DEBUG] Config:");
         console.debug(config);
     }
-    if (!("voices" in knownProperties))
+    if (!isLiveProperty(knownProperties, "voices"))
         delete config.voices;
-    if (!("allowAddonNewtab" in knownProperties))
+    if (!isLiveProperty(knownProperties, "allowAddonNewtab"))
         delete config.allowAddonNewtab;
-    if (!("mediaDevices:enabled" in knownProperties)) {
+    if (!isLiveProperty(knownProperties, "mediaDevices:enabled")) {
         for (const key of Object.keys(config)) {
             if (key.startsWith("mediaDevices:"))
                 delete config[key];

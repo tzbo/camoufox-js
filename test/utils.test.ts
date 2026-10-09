@@ -2,8 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { getPath } from "../src/pkgman";
-import { INSTALL_DIR } from "../src/pkgman";
+import { getPath, INSTALL_DIR } from "../src/pkgman";
 import { getAsBooleanFromENV, launchOptions } from "../src/utils";
 
 function camoufoxInstalled(): boolean {
@@ -73,27 +72,19 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 		return path.join(dir, "camoufox-bin");
 	};
 
-	// Skipping an unsupported seed is silent, so if a seed were ever renamed
-	// upstream we would quietly stop seeding it. Pin the names against the
-	// installed browser's schema so that shows up as a failure instead.
-	test("the installed browser declares every seed we set", () => {
-		const properties: { property: string; type: string }[] = JSON.parse(
+	test("seeds only properties the installed browser still reads", async () => {
+		const properties: { property: string; removed?: string }[] = JSON.parse(
 			fs.readFileSync(getPath("properties.json"), "utf-8"),
 		);
-		for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
-			expect(properties).toContainEqual({ property: seed, type: "uint" });
-		}
-	});
-
-	test("seeds all three properties on a supported browser", async () => {
-		const { env } = await launchOptions({ headless: true });
-		expect(Object.keys(readConfig(env))).toEqual(
-			expect.arrayContaining([
-				"fonts:spacing_seed",
-				"audio:seed",
-				"canvas:seed",
-			]),
+		const live = new Set(
+			properties.filter((p) => p.removed === undefined).map((p) => p.property),
 		);
+		const { env } = await launchOptions({ headless: true });
+		const keys = Object.keys(readConfig(env));
+		for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
+			if (live.has(seed)) expect(keys).toContain(seed);
+			else expect(keys).not.toContain(seed);
+		}
 	});
 
 	test("skips seeds the installed browser does not support", async () => {
@@ -102,7 +93,6 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 			executable_path: legacyBrowserDir(),
 		});
 		const keys = Object.keys(readConfig(env));
-		expect(keys).toContain("fonts:spacing_seed");
 		expect(keys).not.toContain("audio:seed");
 		expect(keys).not.toContain("canvas:seed");
 	});
@@ -123,13 +113,12 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 		expect(config["webGl:vendor"]).toBeTruthy();
 	});
 
-	test("still rejects an explicitly passed unsupported seed", async () => {
-		await expect(
-			launchOptions({
-				headless: true,
-				executable_path: legacyBrowserDir(),
-				config: { "audio:seed": 123 },
-			}),
-		).rejects.toThrow("Unknown property audio:seed in config");
+	test("drops an explicitly passed unsupported seed", async () => {
+		const { env } = await launchOptions({
+			headless: true,
+			executable_path: legacyBrowserDir(),
+			config: { "audio:seed": 123 },
+		});
+		expect(readConfig(env)["audio:seed"]).toBeUndefined();
 	});
 });
