@@ -7,7 +7,7 @@ interface WebGLData {
     lin: number;
     webGl2Enabled: boolean;
 }
-export declare function sampleWebGL(os: "win" | "mac" | "lin", vendor?: string, renderer?: string): Promise<WebGLData>;
+export declare function sampleWebGL(os: "win" | "mac" | "lin", vendor?: string, renderer?: string, seed?: number): Promise<WebGLData>;
 interface VendorRenderer {
     vendor: string;
     renderer: string;

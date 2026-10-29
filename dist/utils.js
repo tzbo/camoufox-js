@@ -1,12 +1,13 @@
 // from browserforge.fingerprints import Fingerprint, Screen
 // from screeninfo import get_monitors
 // from ua_parser import user_agent_parser
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statfsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { UAParser } from "ua-parser-js";
 import { addDefaultAddons, confirmPaths, } from "./addons.js";
 import { InvalidOS, InvalidPropertyType, NonFirefoxFingerprint, } from "./exceptions.js";
-import { applyConfigFixes, clampScreenToDisplay, fromBrowserforge, fromPreset, generateFingerprint, generateFontSubset, generateVoiceSubset, getRandomPreset, SUPPORTED_OS, } from "./fingerprints.js";
+import { applyConfigFixes, appVersionFromUserAgent, clampScreenToDisplay, dropAudioSeed, fromBrowserforge, fromPreset, generateFingerprint, generateFontSubset, generateVoiceSubset, getRandomPreset, identitySalt, identitySeed, SUPPORTED_OS, } from "./fingerprints.js";
 import { publicIP, validIPv4, validIPv6 } from "./ip.js";
 import { geoipAllowed, getGeolocation, handleLocales } from "./locale.js";
 import FONTS from "./mappings/fonts.config.js";
@@ -14,6 +15,33 @@ import { ensureCamoufoxInstalled, getPath, installedVerStr, launchPath, OS_NAME,
 import { LeakWarning } from "./warnings.js";
 import { sampleWebGL } from "./webgl/sample.js";
 // Camoufox preferences to cache previous pages and requests
+const WINDOWS_11_MARKER_FONTS = new Set([
+    "Sans Serif Collection",
+    "Segoe Fluent Icons",
+    "Segoe UI Variable",
+    "Segoe UI Variable Display",
+    "Segoe UI Variable Small",
+    "Segoe UI Variable Text",
+]);
+const WINDOWS_BEHAVIOUR_PREFS = {
+    "layout.word_select.eat_space_to_next_word": true,
+    "general.autoScroll": true,
+    "middlemouse.paste": false,
+    "middlemouse.scrollbarPosition": false,
+    "full-screen-api.transition-duration.enter": "200 200",
+    "full-screen-api.transition-duration.leave": "200 200",
+    "ui.scrollToClick": 0,
+    "slider.snapMultiplier": 6,
+    "layout.scrollbars.click_and_hold_track.continue_to_end": false,
+};
+const CANVAS_PLACEHOLDER_TARGETS = [
+    "+CanvasImageExtractionPrompt",
+    "+CanvasExtractionBeforeUserInputIsBlocked",
+    "+CanvasExtractionFromThirdPartiesIsBlocked",
+];
+const BASELINE_OVERRIDES_PREF = "privacy.baselineFingerprintingProtection.overrides";
+const WEBGPU_BLOCKLIST_PREF = "gfx.blacklist.webgpu";
+const QUOTA_FIXED_LIMIT_PREF = "dom.quotaManager.temporaryStorage.fixedLimit";
 const CACHE_PREFS = {
     "browser.sessionhistory.max_entries": 10,
     "browser.sessionhistory.max_total_viewers": -1,
@@ -193,6 +221,90 @@ function setInto(target, key, value) {
         target[key] = value;
     }
 }
+function isSoftwareRenderer(renderer) {
+    return [
+        "llvmpipe",
+        "Microsoft Basic Render Driver",
+        "SwiftShader",
+        "Generic Renderer",
+    ].some((name) => renderer.includes(name));
+}
+const hostGpuCache = new Map();
+async function probeHostGpu(executablePath, headless) {
+    const key = `${executablePath}\0${headless}`;
+    if (hostGpuCache.has(key))
+        return hostGpuCache.get(key) ?? null;
+    let result = null;
+    try {
+        const { firefox } = await import("playwright-core");
+        const browser = await firefox.launch({
+            executablePath,
+            headless,
+            firefoxUserPrefs: { "webgl.force-enabled": true },
+        });
+        try {
+            const page = await browser.newPage();
+            const gpu = await page.evaluate(() => {
+                const doc = globalThis.document;
+                const gl = doc.createElement("canvas").getContext("webgl");
+                const info = gl?.getExtension("WEBGL_debug_renderer_info");
+                if (!gl || !info)
+                    return null;
+                return [
+                    gl.getParameter(info.UNMASKED_VENDOR_WEBGL),
+                    gl.getParameter(info.UNMASKED_RENDERER_WEBGL),
+                ];
+            });
+            if (Array.isArray(gpu) && gpu[0] && gpu[1]) {
+                result = [String(gpu[0]), String(gpu[1])];
+            }
+        }
+        finally {
+            await browser.close();
+        }
+    }
+    catch {
+        result = null;
+    }
+    hostGpuCache.set(key, result);
+    return result;
+}
+function stockProfileDiskCapacityKb() {
+    const home = homedir();
+    const candidates = OS_NAME === "win"
+        ? [
+            process.env.APPDATA
+                ? path.join(process.env.APPDATA, "Mozilla")
+                : home,
+            home,
+        ]
+        : OS_NAME === "mac"
+            ? [path.join(home, "Library", "Application Support", "Firefox"), home]
+            : [path.join(home, ".mozilla"), home];
+    for (const candidate of candidates) {
+        let probe = candidate;
+        while (!existsSync(probe) && path.dirname(probe) !== probe) {
+            probe = path.dirname(probe);
+        }
+        try {
+            const st = statfsSync(probe);
+            const total = Number(st.blocks) * Number(st.bsize);
+            if (total > 0)
+                return Math.min(Math.floor(total / 2 / 1024), 2 ** 31 - 1);
+        }
+        catch { }
+    }
+    return undefined;
+}
+function addCanvasPlaceholder(prefs) {
+    const overrides = String(prefs[BASELINE_OVERRIDES_PREF] || "")
+        .split(",")
+        .filter(Boolean);
+    prefs[BASELINE_OVERRIDES_PREF] = [
+        ...overrides,
+        ...CANVAS_PLACEHOLDER_TARGETS,
+    ].join(",");
+}
 function isDomainSet(config, ...properties) {
     return properties.some((prop) => {
         if (prop.endsWith(".") || prop.endsWith(":")) {
@@ -344,7 +456,7 @@ function getProxyUrl(proxy) {
  * Callers must normalize `"virtual"` to `boolean` before calling this function.
  * The virtual display setup is handled separately in the calling function.
  */
-export async function launchOptions({ config, os, block_images, block_webrtc, block_webgl, disable_coop, webgl_config, geoip, humanize, locale, addons, fonts, custom_fonts_only, exclude_addons, screen, window, fingerprint, fingerprint_preset, ff_version, headless, main_world_eval, allow_addon_new_tab, executable_path, firefox_user_prefs, proxy, enable_cache, args, env, i_know_what_im_doing, debug, virtual_display, geoip_db: _geoip_db, browser: _browser, ...launch_options }) {
+export async function launchOptions({ config, os, block_images, block_webrtc, block_webgl, disable_coop, webgl_config, geoip, humanize, locale, addons, fonts, custom_fonts_only, exclude_addons, screen, window, fingerprint, fingerprint_preset, ff_version, headless, main_world_eval, allow_addon_new_tab, executable_path, firefox_user_prefs, proxy, enable_cache, args, env, i_know_what_im_doing, debug, virtual_display, canvas_noise, geoip_db: _geoip_db, browser: _browser, ...launch_options }) {
     // Build the config
     if (!config) {
         config = {};
@@ -390,6 +502,17 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     const userSetNavigator = isDomainSet(config, "navigator.");
     const userSetScreenWindow = isDomainSet(config, "screen.", "window.");
     const userSetMediaDevices = isDomainSet(config, "mediaDevices:");
+    const userSetFonts = Boolean(fonts) || isDomainSet(config, "fonts");
+    const userSetVoices = isDomainSet(config, "voices");
+    const userSetAppVersion = "navigator.appVersion" in config;
+    dropAudioSeed(config);
+    const pinnedSalt = fingerprint != null
+        ? identitySalt(fingerprint)
+        : fingerprint_preset && typeof fingerprint_preset === "object"
+            ? identitySalt(fingerprint_preset)
+            : "navigator.userAgent" in config
+                ? identitySalt({ ...config })
+                : identitySalt();
     const operatingSystems = validateOS(os);
     // webgl_config requires OS to be set
     if (!operatingSystems && webgl_config) {
@@ -426,7 +549,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
             ? fingerprint_preset
             : getRandomPreset(os, ff_version_str);
         if (preset) {
-            mergeInto(config, fromPreset(preset, ff_version_str));
+            mergeInto(config, fromPreset(preset, ff_version_str, pinnedSalt));
             usedPreset = true;
         }
     }
@@ -440,23 +563,15 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     if (!usedPreset && fingerprint) {
         mergeInto(config, fromBrowserforge(fingerprint, ff_version_str));
     }
-    // Add seeds (BrowserForge doesn't generate these). Mirrors fingerprints.py,
-    // which seeds these right after from_browserforge() with setdefault. Range is
-    // 1..2^32-1 — 0 is excluded because it's a no-op in the C++ managers. Without
-    // a per-launch audio:seed the AudioFingerprintManager defaults to 0, so every
-    // spoofed context returns identical audio samples — a "same machine behind
-    // many identities" tell on CreepJS. setInto is "set only if unset", so a
-    // caller-supplied seed wins (the JS equivalent of setdefault). audio:seed and
-    // canvas:seed only exist since Camoufox 2.0, and the library supports older
-    // builds, so seed only what the installed browser's schema knows.
-    const randint = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+    dropAudioSeed(config);
     const knownProperties = loadProperties(executable_path);
-    for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
-        if (isLiveProperty(knownProperties, seed)) {
-            setInto(config, seed, randint(1, 4_294_967_295));
-        }
-    }
     const targetOS = getTargetOS(config);
+    const drawSeed = () => identitySeed(config, pinnedSalt);
+    if (!userSetAppVersion) {
+        const derived = appVersionFromUserAgent(String(config["navigator.userAgent"] ?? ""));
+        if (derived)
+            config["navigator.appVersion"] = derived;
+    }
     if (!userSetNavigator || !userSetScreenWindow || !userSetMediaDevices) {
         if (!userSetScreenWindow &&
             headlessBoolean === false &&
@@ -469,6 +584,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
             screen: !userSetScreenWindow,
             media: !userSetMediaDevices &&
                 isLiveProperty(knownProperties, "mediaDevices:enabled"),
+            seed: drawSeed(),
         });
     }
     if (custom_fonts_only) {
@@ -481,9 +597,9 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
             throw new Error("No custom fonts were passed, but `custom_fonts_only` is enabled.");
         }
     }
-    else if (!config.fonts || !config.fonts.length) {
+    else if (!userSetFonts || !config.fonts?.length) {
         try {
-            config.fonts = generateFontSubset(targetOS);
+            config.fonts = generateFontSubset(targetOS, drawSeed());
         }
         catch {
             updateFonts(config, targetOS);
@@ -491,14 +607,6 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     }
     if (fonts && fonts.length && !custom_fonts_only) {
         config.fonts = Array.from(new Set([...(config.fonts || []), ...fonts]));
-    }
-    if (isLiveProperty(knownProperties, "voices") && !("voices" in config)) {
-        try {
-            config.voices = generateVoiceSubset(targetOS);
-        }
-        catch {
-            /* optional */
-        }
     }
     // Handle proxy
     const proxyUrl = getProxyUrl(proxy);
@@ -533,6 +641,23 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     if (locale) {
         handleLocales(locale, config);
     }
+    if (isLiveProperty(knownProperties, "voices") &&
+        (!userSetVoices || !("voices" in config))) {
+        const voiceLocale = config["locale:language"]
+            ? [config["locale:language"], config["locale:region"]]
+                .filter(Boolean)
+                .join("-")
+            : config["navigator.language"];
+        try {
+            config.voices = generateVoiceSubset(targetOS, voiceLocale, drawSeed());
+        }
+        catch {
+            config.voices = [];
+        }
+    }
+    if (isLiveProperty(knownProperties, "voices:blockIfNotDefined")) {
+        setInto(config, "voices:blockIfNotDefined", true);
+    }
     // Pass the humanize option
     if (humanize) {
         setInto(config, "humanize", true);
@@ -548,49 +673,111 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
         isLiveProperty(knownProperties, "allowAddonNewtab")) {
         setInto(config, "allowAddonNewtab", true);
     }
-    // Set Firefox user preferences
-    if (block_images) {
+    if (block_images)
         LeakWarning.warn("block_images", i_know_what_im_doing);
-        firefox_user_prefs["permissions.default.image"] = 2;
-    }
-    if (block_webrtc) {
-        firefox_user_prefs["media.peerconnection.enabled"] = false;
-    }
-    if (disable_coop) {
+    if (disable_coop)
         LeakWarning.warn("disable_coop", i_know_what_im_doing);
-        firefox_user_prefs["browser.tabs.remote.useCrossOriginOpenerPolicy"] =
-            false;
+    firefox_user_prefs["permissions.default.image"] ??= block_images ? 2 : 1;
+    firefox_user_prefs["media.peerconnection.enabled"] ??= !block_webrtc;
+    firefox_user_prefs["browser.tabs.remote.useCrossOriginOpenerPolicy"] ??=
+        !disable_coop;
+    const webglDisabled = Boolean(block_webgl || launch_options.allow_webgl === false);
+    const namedGpu = Boolean(webgl_config || (config["webGl:vendor"] && config["webGl:renderer"]));
+    let hostGpu = null;
+    let coverCanvas = false;
+    if (canvas_noise === true) {
+        coverCanvas = true;
     }
-    // Allow allow_webgl parameter for backwards compatibility
-    if (block_webgl || launch_options.allow_webgl === false) {
+    else if (targetOS === OS_NAME && !namedGpu) {
+        if (!webglDisabled) {
+            const bin = executable_path ? String(executable_path) : launchPath();
+            const probed = existsSync(bin)
+                ? await probeHostGpu(bin, headlessBoolean)
+                : null;
+            if (probed && !isSoftwareRenderer(probed[1])) {
+                try {
+                    await sampleWebGL(targetOS, probed[0], probed[1]);
+                    hostGpu = probed;
+                }
+                catch {
+                    coverCanvas = canvas_noise == null;
+                }
+            }
+        }
+    }
+    else if (canvas_noise !== false) {
+        coverCanvas = true;
+    }
+    const presentedFonts = config.fonts || [];
+    if (targetOS === "win") {
+        const windows11 = presentedFonts.length === 0 ||
+            presentedFonts.some((font) => WINDOWS_11_MARKER_FONTS.has(font));
+        firefox_user_prefs["ui.useOverlayScrollbars"] ??= windows11 ? 1 : 0;
+    }
+    else {
+        firefox_user_prefs["ui.useOverlayScrollbars"] ??= 1;
+    }
+    if (targetOS === "win" && OS_NAME !== "win") {
+        firefox_user_prefs["javascript.options.use_ucrt_math"] ??= true;
+        setInto(config, "input:windowsKeyboard", true);
+        for (const [pref, value] of Object.entries(WINDOWS_BEHAVIOUR_PREFS)) {
+            firefox_user_prefs[pref] ??= value;
+        }
+        const overlay = firefox_user_prefs["ui.useOverlayScrollbars"];
+        firefox_user_prefs["widget.non-native-theme.scrollbar.style"] ??= overlay
+            ? 5
+            : 4;
+    }
+    if (targetOS === "lin") {
+        firefox_user_prefs["gfx.font_rendering.fallback.async"] ??= false;
+    }
+    const quotaKb = stockProfileDiskCapacityKb();
+    if (quotaKb)
+        firefox_user_prefs[QUOTA_FIXED_LIMIT_PREF] ??= quotaKb;
+    if (webglDisabled) {
         firefox_user_prefs["webgl.disabled"] = true;
         LeakWarning.warn("block_webgl", i_know_what_im_doing);
     }
     else {
-        // If the user has provided a specific WebGL vendor/renderer pair, use it
+        const seed = drawSeed();
         let webgl_fp;
-        if (webgl_config) {
-            webgl_fp = await sampleWebGL(targetOS, ...webgl_config);
+        if (hostGpu) {
+            webgl_fp = await sampleWebGL(targetOS, hostGpu[0], hostGpu[1], seed);
+        }
+        else if (webgl_config) {
+            webgl_fp = await sampleWebGL(targetOS, webgl_config[0], webgl_config[1], seed);
         }
         else if (config["webGl:vendor"] && config["webGl:renderer"]) {
             try {
-                webgl_fp = await sampleWebGL(targetOS, config["webGl:vendor"], config["webGl:renderer"]);
+                webgl_fp = await sampleWebGL(targetOS, config["webGl:vendor"], config["webGl:renderer"], seed);
             }
             catch {
-                webgl_fp = await sampleWebGL(targetOS);
+                webgl_fp = await sampleWebGL(targetOS, undefined, undefined, seed);
             }
         }
         else {
-            webgl_fp = await sampleWebGL(targetOS);
+            webgl_fp = await sampleWebGL(targetOS, undefined, undefined, seed);
         }
         const { webGl2Enabled, ...webGlConfig } = webgl_fp;
-        // Merge the WebGL fingerprint into the config
         mergeInto(config, webGlConfig);
-        // Set the WebGL preferences
         mergeInto(firefox_user_prefs, {
             "webgl.enable-webgl2": webGl2Enabled,
             "webgl.force-enabled": true,
         });
+    }
+    if (coverCanvas)
+        addCanvasPlaceholder(firefox_user_prefs);
+    const gpuVendor = config["webGl:vendor"];
+    const gpuRenderer = config["webGl:renderer"];
+    const webgpuOn = targetOS === "win" || (targetOS === "mac" && gpuVendor === "Apple");
+    firefox_user_prefs["dom.webgpu.enabled"] ??= webgpuOn;
+    if (webgpuOn) {
+        const ownAdapter = Boolean(hostGpu && hostGpu[0] === gpuVendor && hostGpu[1] === gpuRenderer);
+        firefox_user_prefs[WEBGPU_BLOCKLIST_PREF] ??= ownAdapter ? 1 : 4;
+    }
+    const dpr = Number(config["window.devicePixelRatio"] || 1);
+    if (dpr !== 1) {
+        firefox_user_prefs["layout.css.devPixelsPerPx"] ??= `${dpr}`;
     }
     // Cache previous pages, requests, etc (uses more memory)
     if (enable_cache) {

@@ -37,7 +37,7 @@ export default {
         width: "screen.width",
         colorDepth: "screen.colorDepth",
         pixelDepth: "screen.pixelDepth",
-        // devicePixelRatio is not recommended. Any value other than 1.0 is suspicious.
+        devicePixelRatio: "window.devicePixelRatio",
         outerHeight: "window.outerHeight",
         outerWidth: "window.outerWidth",
         screenX: "window.screenX",

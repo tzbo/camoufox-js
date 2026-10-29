@@ -3,9 +3,9 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
 	Camoufox,
-	NewContext,
 	generateContextFingerprint,
 	getRandomPreset,
+	NewContext,
 } from "../src";
 import { INSTALL_DIR } from "../src/pkgman";
 
@@ -16,12 +16,11 @@ function camoufoxInstalled(): boolean {
 describe("generateContextFingerprint", () => {
 	test("returns initScript and contextOptions", async () => {
 		const fp = await generateContextFingerprint({ os: "macos" });
-		expect(fp.initScript).toContain("setCanvasSeed");
 		expect(fp.initScript).toContain("setNavigatorUserAgent");
 		expect(fp.contextOptions.userAgent).toMatch(/Firefox/);
 		expect(fp.contextOptions.userAgent).toMatch(/Mac OS/i);
-		expect(fp.config["canvas:seed"]).toBeGreaterThan(0);
-		expect(fp.config["audio:seed"]).toBeGreaterThan(0);
+		expect(fp.config["audio:seed"]).toBeUndefined();
+		expect(fp.config.fonts.length).toBeGreaterThan(0);
 	});
 
 	test("config_overrides apply before initScript", async () => {
@@ -51,7 +50,6 @@ describe("generateContextFingerprint", () => {
 	test("two calls produce different seeds", async () => {
 		const a = await generateContextFingerprint({ os: "linux" });
 		const b = await generateContextFingerprint({ os: "linux" });
-		expect(a.config["canvas:seed"]).not.toBe(b.config["canvas:seed"]);
 		expect(a.initScript).not.toBe(b.initScript);
 	});
 });

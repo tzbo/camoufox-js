@@ -72,24 +72,18 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 		return path.join(dir, "camoufox-bin");
 	};
 
-	test("seeds only properties the installed browser still reads", async () => {
-		const properties: { property: string; removed?: string }[] = JSON.parse(
-			fs.readFileSync(getPath("properties.json"), "utf-8"),
-		);
-		const live = new Set(
-			properties.filter((p) => p.removed === undefined).map((p) => p.property),
-		);
-		const { env } = await launchOptions({ headless: true });
+	test("does not send audio or canvas seeds", async () => {
+		const { env } = await launchOptions({ headless: true, os: "linux" });
 		const keys = Object.keys(readConfig(env));
 		for (const seed of ["fonts:spacing_seed", "audio:seed", "canvas:seed"]) {
-			if (live.has(seed)) expect(keys).toContain(seed);
-			else expect(keys).not.toContain(seed);
+			expect(keys).not.toContain(seed);
 		}
 	});
 
 	test("skips seeds the installed browser does not support", async () => {
 		const { env } = await launchOptions({
 			headless: true,
+			os: "linux",
 			executable_path: legacyBrowserDir(),
 		});
 		const keys = Object.keys(readConfig(env));
@@ -98,7 +92,7 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 	});
 
 	test("does not pin window.history.length", async () => {
-		const { env } = await launchOptions({ headless: true });
+		const { env } = await launchOptions({ headless: true, os: "linux" });
 		expect(readConfig(env)["window.history.length"]).toBeUndefined();
 	});
 
@@ -116,6 +110,7 @@ describe.skipIf(!camoufoxInstalled())("launchOptions seeding", () => {
 	test("drops an explicitly passed unsupported seed", async () => {
 		const { env } = await launchOptions({
 			headless: true,
+			os: "linux",
 			executable_path: legacyBrowserDir(),
 			config: { "audio:seed": 123 },
 		});

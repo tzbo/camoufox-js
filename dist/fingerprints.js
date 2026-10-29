@@ -1,6 +1,8 @@
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32 } from "node:zlib";
 import { FingerprintGenerator, } from "fingerprint-generator";
 import BROWSERFORGE_DATA from "./mappings/browserforge.config.js";
 import FONTS from "./mappings/fonts.config.js";
@@ -87,12 +89,105 @@ export function generateFingerprint(window, config) {
     return FP_GENERATOR.getFingerprint(config).fingerprint;
 }
 const MARKER_FONTS = {
-    mac: ["Helvetica Neue", "PingFang HK", "PingFang SC", "PingFang TC", "Hiragino Sans GB", "Songti SC"],
-    win: ["Segoe UI", "Tahoma", "Cambria Math", "Nirmala UI", "Microsoft YaHei", "Microsoft YaHei UI", "SimSun", "NSimSun"],
-    lin: ["Arimo", "Cousine", "Tinos", "Twemoji Mozilla", "Noto Sans SC", "Noto Sans TC"],
+    mac: [
+        "Helvetica Neue",
+        "PingFang HK",
+        "PingFang SC",
+        "PingFang TC",
+        "Hiragino Sans GB",
+        "Songti SC",
+    ],
+    win: [
+        "Segoe UI",
+        "Tahoma",
+        "Cambria Math",
+        "Nirmala UI",
+        "Microsoft YaHei",
+        "Microsoft YaHei UI",
+        "SimSun",
+        "NSimSun",
+    ],
+    lin: [
+        "Arimo",
+        "Cousine",
+        "Tinos",
+        "Twemoji Mozilla",
+        "Noto Sans SC",
+        "Noto Sans TC",
+    ],
 };
 function randint(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+function rngFrom(seed) {
+    if (seed == null)
+        return Math.random;
+    let a = seed >>> 0;
+    return () => {
+        a |= 0;
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+function stableStringify(value) {
+    if (value === undefined)
+        return "null";
+    if (value === null || typeof value !== "object") {
+        return JSON.stringify(value) ?? "null";
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+    }
+    const obj = value;
+    const keys = Object.keys(obj).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
+}
+export function identitySalt(pinned) {
+    if (pinned == null)
+        return randomBytes(8).readBigUInt64BE(0);
+    return createHash("sha256")
+        .update(stableStringify(pinned))
+        .digest()
+        .readBigUInt64BE(0);
+}
+export function versionlessUa(userAgent) {
+    return userAgent.replace(/(rv:|Firefox\/)[0-9][0-9.]*/g, "$1");
+}
+export function identitySeed(config, salt = 0) {
+    const parts = [
+        versionlessUa(String(config["navigator.userAgent"] ?? "")),
+        String(config["navigator.platform"] ?? ""),
+        String(config["screen.width"] ?? ""),
+        String(config["screen.height"] ?? ""),
+        String(config["navigator.hardwareConcurrency"] ?? ""),
+        String(salt),
+    ];
+    return crc32(parts.join("|")) >>> 0;
+}
+const APP_VERSION_DROPPED = new Set(["Win64", "x64", "Mobile", "Tablet"]);
+export function appVersionFromUserAgent(userAgent) {
+    const block = /^Mozilla\/5\.0 \(([^)]*)\)/.exec(userAgent || "");
+    const inner = block?.[1];
+    if (!inner)
+        return undefined;
+    const kept = [];
+    for (const part of inner.split(";")) {
+        const token = part.trim();
+        if (!token ||
+            token.startsWith("rv:") ||
+            APP_VERSION_DROPPED.has(token) ||
+            token.startsWith("Linux ") ||
+            token.startsWith("Intel Mac OS X")) {
+            continue;
+        }
+        kept.push(token.startsWith("Windows") ? "Windows" : token);
+    }
+    return kept.length ? `5.0 (${kept.join("; ")})` : undefined;
+}
+export function dropAudioSeed(config) {
+    delete config["audio:seed"];
 }
 function platformToOs(platform) {
     if (platform === "Win32")
@@ -109,16 +204,17 @@ function osToKey(osName) {
         return "lin";
     return "mac";
 }
-export function generateFontSubset(targetOs) {
+export function generateFontSubset(targetOs, seed) {
+    const rng = rngFrom(seed);
     const full = FONTS[targetOs] ?? FONTS.mac;
     const markers = MARKER_FONTS[targetOs];
     const essential = new Set(markers);
     const result = full.filter((f) => essential.has(f));
     const rest = full.filter((f) => !essential.has(f));
-    const pct = 30 + Math.floor(Math.random() * 49);
+    const pct = 30 + Math.floor(rng() * 49);
     const count = Math.round((pct / 100) * rest.length);
     for (let i = rest.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor(rng() * (i + 1));
         const a = rest[i];
         rest[i] = rest[j];
         rest[j] = a;
@@ -140,7 +236,7 @@ function deriveOscpu(platform) {
     }
     return undefined;
 }
-export function fromPreset(preset, ffVersion) {
+export function fromPreset(preset, ffVersion, salt) {
     const config = {};
     const nav = preset.navigator ?? {};
     if (nav.userAgent) {
@@ -180,26 +276,31 @@ export function fromPreset(preset, ffVersion) {
         config["screen.availWidth"] = screen.availWidth;
     if (screen.availHeight)
         config["screen.availHeight"] = screen.availHeight;
+    if (screen.devicePixelRatio) {
+        config["window.devicePixelRatio"] = screen.devicePixelRatio;
+    }
     const webgl = preset.webgl ?? {};
     if (webgl.unmaskedVendor)
         config["webGl:vendor"] = webgl.unmaskedVendor;
     if (webgl.unmaskedRenderer)
         config["webGl:renderer"] = webgl.unmaskedRenderer;
-    config["fonts:spacing_seed"] = randint(1, 4_294_967_295);
-    config["audio:seed"] = randint(1, 4_294_967_295);
-    config["canvas:seed"] = randint(1, 4_294_967_295);
     if (preset.timezone)
         config.timezone = preset.timezone;
+    const derived = appVersionFromUserAgent(String(config["navigator.userAgent"] ?? ""));
+    if (derived)
+        config["navigator.appVersion"] = derived;
     const osName = platformToOs(String(nav.platform ?? ""));
+    const drawSalt = salt ?? identitySalt();
+    const seed = identitySeed(config, drawSalt);
     try {
-        config.fonts = generateFontSubset(osToKey(osName));
+        config.fonts = generateFontSubset(osToKey(osName), seed);
     }
     catch {
         if (preset.fonts)
             config.fonts = [...preset.fonts];
     }
     try {
-        config.voices = generateVoiceSubset(osToKey(osName));
+        config.voices = generateVoiceSubset(osToKey(osName), undefined, seed);
     }
     catch {
         if (preset.speechVoices) {
@@ -223,7 +324,13 @@ export function getRandomPreset(os, _ffVersion) {
     if (!bundle?.presets)
         return undefined;
     const keys = os
-        ? (Array.isArray(os) ? os : [os]).map((o) => o === "win" ? "windows" : o === "mac" ? "macos" : o === "lin" ? "linux" : o)
+        ? (Array.isArray(os) ? os : [os]).map((o) => o === "win"
+            ? "windows"
+            : o === "mac"
+                ? "macos"
+                : o === "lin"
+                    ? "linux"
+                    : o)
         : ["macos", "windows", "linux"];
     const candidates = [];
     for (const key of keys) {
@@ -284,7 +391,7 @@ function parseVoiceEntry(entry, osKey) {
         type: vtype,
     };
 }
-export function generateVoiceSubset(targetOs, locale) {
+export function generateVoiceSubset(targetOs, locale, seed) {
     const file = path.join(currentDir, "data-files", "voices.json");
     if (!existsSync(file))
         return [];
@@ -296,13 +403,14 @@ export function generateVoiceSubset(targetOs, locale) {
         return [];
     let selected = full;
     if (targetOs === "mac") {
+        const rng = rngFrom(seed);
         const essential = new Set(ESSENTIAL_VOICES_MACOS);
         const result = full.filter((v) => essential.has(v.name));
         const rest = full.filter((v) => !essential.has(v.name));
-        const pct = 40 + Math.floor(Math.random() * 41);
+        const pct = 40 + Math.floor(rng() * 41);
         const count = Math.round((pct / 100) * rest.length);
         for (let i = rest.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(rng() * (i + 1));
             const a = rest[i];
             rest[i] = rest[j];
             rest[j] = a;
@@ -369,6 +477,90 @@ export function clampScreenToDisplay(config, maxWidth, maxHeight) {
             config[availKey] = Math.max(1, cap - Math.max(0, screen - avail));
         }
     }
+}
+const MEDIA_P_NO_MIC = { win: 0.08, mac: 0, lin: 0.2 };
+const MEDIA_P_BUILTIN_CAM = {
+    win: 0.78,
+    mac: 0,
+    lin: 0.45,
+};
+let mediaDevicesCache = null;
+function loadMediaDevices() {
+    if (mediaDevicesCache)
+        return mediaDevicesCache;
+    const file = path.join(currentDir, "data-files", "media-devices.json");
+    const loaded = JSON.parse(readFileSync(file, "utf-8"));
+    mediaDevicesCache = loaded;
+    return loaded;
+}
+function weightedChoice(rng, items) {
+    const total = items.reduce((sum, item) => sum + (item.w ?? 1), 0);
+    let r = rng() * total;
+    let picked = items[0];
+    for (const item of items) {
+        picked = item;
+        r -= item.w ?? 1;
+        if (r < 0)
+            return item;
+    }
+    return picked ?? {};
+}
+export function drawMediaDevices(osKey, seed) {
+    const rng = rngFrom(seed);
+    const cat = loadMediaDevices()[osKey] ?? loadMediaDevices().win;
+    const mics = [];
+    const outs = [];
+    const cams = [];
+    let n = 0;
+    const group = () => `hw-${++n}`;
+    const add = (item, grp) => {
+        for (const mic of item.mics ?? [])
+            mics.push([mic, grp]);
+        for (const out of item.outs ?? [])
+            outs.push([out, grp]);
+        if (item.cam)
+            cams.push([item.cam, group()]);
+    };
+    const card = weightedChoice(rng, cat.cards);
+    const noMic = rng() < (MEDIA_P_NO_MIC[osKey] ?? 0);
+    const cardGroup = group();
+    add(noMic ? { ...card, mics: [] } : card, cardGroup);
+    const pCam = MEDIA_P_BUILTIN_CAM[osKey] ?? 0;
+    if (rng() < (noMic ? pCam * 0.3 : pCam)) {
+        const builtin = cat.cameras.filter((c) => !c.mic);
+        const cam = builtin.length ? weightedChoice(rng, builtin).cam : undefined;
+        if (cam)
+            cams.push([cam, group()]);
+    }
+    if (rng() < (cat.p_headset ?? 0))
+        add(weightedChoice(rng, cat.headsets), group());
+    if (rng() < (cat.p_display ?? 0))
+        add(weightedChoice(rng, cat.displays), group());
+    if (rng() < (cat.p_extra_camera ?? 0)) {
+        const external = cat.cameras.filter((c) => c.mic);
+        const cam = weightedChoice(rng, external.length ? external : cat.cameras);
+        const grp = group();
+        if (cam.cam)
+            cams.push([cam.cam, grp]);
+        if (cam.mic)
+            mics.push([cam.mic, grp]);
+    }
+    if (cat.monitor_sources) {
+        for (const [label, grp] of [...outs])
+            mics.push([`Monitor of ${label}`, grp]);
+    }
+    return {
+        "mediaDevices:enabled": true,
+        "mediaDevices:micros": mics.length,
+        "mediaDevices:webcams": cams.length,
+        "mediaDevices:speakers": outs.length,
+        "mediaDevices:microphoneLabels": mics.map(([label]) => label),
+        "mediaDevices:microphoneGroups": mics.map(([, grp]) => grp),
+        "mediaDevices:webcamLabels": cams.map(([label]) => label),
+        "mediaDevices:webcamGroups": cams.map(([, grp]) => grp),
+        "mediaDevices:speakerLabels": outs.map(([label]) => label),
+        "mediaDevices:speakerGroups": outs.map(([, grp]) => grp),
+    };
 }
 export function applyConfigFixes(config, targetOs, parts = {}) {
     const { navigator: fixNav = true, screen: fixScreen = true, media: fixMedia = true, } = parts;
@@ -447,21 +639,17 @@ export function applyConfigFixes(config, targetOs, parts = {}) {
     }
     if (fixMedia &&
         !Object.keys(config).some((k) => k.startsWith("mediaDevices:"))) {
-        config["mediaDevices:enabled"] = true;
-        config["mediaDevices:micros"] = 1;
-        config["mediaDevices:webcams"] = 1;
-        config["mediaDevices:speakers"] = 0;
+        Object.assign(config, drawMediaDevices(targetOs, parts.seed ?? identitySeed(config, identitySalt())));
     }
 }
 function buildInitScript(values) {
     const lines = ["(function(v) {", "  var w = window;"];
     const setters = [
         ["fontSpacingSeed", "setFontSpacingSeed"],
-        ["audioFingerprintSeed", "setAudioFingerprintSeed"],
-        ["canvasSeed", "setCanvasSeed"],
         ["navigatorPlatform", "setNavigatorPlatform"],
         ["navigatorOscpu", "setNavigatorOscpu"],
         ["navigatorUserAgent", "setNavigatorUserAgent"],
+        ["navigatorAppVersion", "setNavigatorAppVersion"],
         ["hardwareConcurrency", "setNavigatorHardwareConcurrency"],
         ["webglVendor", "setWebGLVendor"],
         ["webglRenderer", "setWebGLRenderer"],
@@ -510,31 +698,36 @@ export async function generateContextFingerprint(options = {}) {
     let nav;
     let screen;
     let webgl;
+    let salt;
     if (preset) {
-        config = fromPreset(preset, ffVersion);
+        salt = identitySalt(preset);
+        config = fromPreset(preset, ffVersion, salt);
         nav = preset.navigator ?? {};
         screen = preset.screen ?? {};
         webgl = preset.webgl ?? {};
     }
     else {
         const operatingSystems = os
-            ? (Array.isArray(os) ? os : [os])
+            ? (Array.isArray(os)
+                ? os
+                : [os])
             : undefined;
         const genOpts = {};
         if (operatingSystems)
             genOpts.operatingSystems = operatingSystems;
         if (options.screen)
             genOpts.screen = options.screen;
-        const fp = options.fingerprint ?? generateFingerprint(undefined, Object.keys(genOpts).length ? genOpts : undefined);
+        const fp = options.fingerprint ??
+            generateFingerprint(undefined, Object.keys(genOpts).length ? genOpts : undefined);
+        salt = identitySalt(options.fingerprint ?? fp);
         config = fromBrowserforge(fp, ffVersion);
-        config["fonts:spacing_seed"] ??= randint(1, 4_294_967_295);
-        config["audio:seed"] ??= randint(1, 4_294_967_295);
-        config["canvas:seed"] ??= randint(1, 4_294_967_295);
+        dropAudioSeed(config);
         const plat = String(config["navigator.platform"] ?? "");
         const osName = platformToOs(plat);
+        const seed = identitySeed(config, salt);
         if (!config.fonts) {
             try {
-                config.fonts = generateFontSubset(osToKey(osName));
+                config.fonts = generateFontSubset(osToKey(osName), seed);
             }
             catch {
                 /* launch-level fonts remain */
@@ -542,7 +735,7 @@ export async function generateContextFingerprint(options = {}) {
         }
         if (!config.voices) {
             try {
-                config.voices = generateVoiceSubset(osToKey(osName), locale);
+                config.voices = generateVoiceSubset(osToKey(osName), locale, seed);
             }
             catch {
                 /* optional */
@@ -553,10 +746,13 @@ export async function generateContextFingerprint(options = {}) {
             if (oscpu)
                 config["navigator.oscpu"] = oscpu;
         }
+        const derived = appVersionFromUserAgent(String(config["navigator.userAgent"] ?? ""));
+        if (derived)
+            config["navigator.appVersion"] = derived;
         if (!config["webGl:vendor"] || !config["webGl:renderer"]) {
             try {
                 const targetOs = osToKey(typeof os === "string" ? os : osName);
-                const webglFp = await sampleWebGL(targetOs);
+                const webglFp = await sampleWebGL(targetOs, undefined, undefined, seed);
                 const { webGl2Enabled: _webGl2Enabled, ...webGlConfig } = webglFp;
                 Object.assign(config, webGlConfig);
             }
@@ -573,7 +769,7 @@ export async function generateContextFingerprint(options = {}) {
             width: config["screen.width"],
             height: config["screen.height"],
             colorDepth: config["screen.colorDepth"],
-            devicePixelRatio: config["screen.devicePixelRatio"],
+            devicePixelRatio: config["window.devicePixelRatio"] ?? config["screen.devicePixelRatio"],
         };
         webgl = {
             unmaskedVendor: config["webGl:vendor"],
@@ -593,20 +789,22 @@ export async function generateContextFingerprint(options = {}) {
     const targetOs = osToKey(platformToOs(String(config["navigator.platform"] ?? "")));
     if (!config.voices) {
         try {
-            config.voices = generateVoiceSubset(targetOs, locale);
+            config.voices = generateVoiceSubset(targetOs, locale, identitySeed(config, salt));
         }
         catch {
             /* optional */
         }
     }
-    applyConfigFixes(config, targetOs);
-    if (configOverrides)
+    applyConfigFixes(config, targetOs, { seed: identitySeed(config, salt) });
+    dropAudioSeed(config);
+    if (configOverrides) {
+        dropAudioSeed(configOverrides);
         Object.assign(config, configOverrides);
+    }
     const initValues = {
         fontSpacingSeed: config["fonts:spacing_seed"],
-        audioFingerprintSeed: config["audio:seed"],
-        canvasSeed: config["canvas:seed"],
         navigatorPlatform: config["navigator.platform"] ?? nav.platform,
+        navigatorAppVersion: config["navigator.appVersion"],
         navigatorOscpu: config["navigator.oscpu"],
         navigatorUserAgent: config["navigator.userAgent"],
         hardwareConcurrency: config["navigator.hardwareConcurrency"] ?? nav.hardwareConcurrency,

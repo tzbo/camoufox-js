@@ -23,6 +23,7 @@ declare const _default: {
         width: string;
         colorDepth: string;
         pixelDepth: string;
+        devicePixelRatio: string;
         outerHeight: string;
         outerWidth: string;
         screenX: string;

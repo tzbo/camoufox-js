@@ -121,7 +121,7 @@ export interface LaunchOptions {
  * Callers must normalize `"virtual"` to `boolean` before calling this function.
  * The virtual display setup is handled separately in the calling function.
  */
-export declare function launchOptions({ config, os, block_images, block_webrtc, block_webgl, disable_coop, webgl_config, geoip, humanize, locale, addons, fonts, custom_fonts_only, exclude_addons, screen, window, fingerprint, fingerprint_preset, ff_version, headless, main_world_eval, allow_addon_new_tab, executable_path, firefox_user_prefs, proxy, enable_cache, args, env, i_know_what_im_doing, debug, virtual_display, geoip_db: _geoip_db, browser: _browser, ...launch_options }: Omit<LaunchOptions, "headless"> & {
+export declare function launchOptions({ config, os, block_images, block_webrtc, block_webgl, disable_coop, webgl_config, geoip, humanize, locale, addons, fonts, custom_fonts_only, exclude_addons, screen, window, fingerprint, fingerprint_preset, ff_version, headless, main_world_eval, allow_addon_new_tab, executable_path, firefox_user_prefs, proxy, enable_cache, args, env, i_know_what_im_doing, debug, virtual_display, canvas_noise, geoip_db: _geoip_db, browser: _browser, ...launch_options }: Omit<LaunchOptions, "headless"> & {
     headless?: boolean;
 }): Promise<Record<string, any>>;
 export {};

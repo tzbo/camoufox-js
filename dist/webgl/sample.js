@@ -19,7 +19,19 @@ async function openDatabase(pathName) {
 // Get database path relative to this file
 const currentDir = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(currentDir, "..", "data-files", "webgl_data.db");
-export async function sampleWebGL(os, vendor, renderer) {
+function rngFrom(seed) {
+    if (seed == null)
+        return Math.random;
+    let a = seed >>> 0;
+    return () => {
+        a |= 0;
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+export async function sampleWebGL(os, vendor, renderer, seed) {
     if (!OS_ARCH_MATRIX[os]) {
         throw new Error(`Invalid OS: ${os}. Must be one of: win, mac, lin`);
     }
@@ -57,7 +69,7 @@ export async function sampleWebGL(os, vendor, renderer) {
                 const probsArray = probs.map((p) => p / probs.reduce((a, b) => a + b, 0));
                 function weightedRandomChoice(weights) {
                     const sum = weights.reduce((acc, weight) => acc + weight, 0);
-                    const threshold = Math.random() * sum;
+                    const threshold = rngFrom(seed)() * sum;
                     let cumulativeSum = 0;
                     for (let i = 0; i < weights.length; i++) {
                         cumulativeSum += weights[i];
