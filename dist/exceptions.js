@@ -145,6 +145,12 @@ export class CamoufoxNotInstalled extends Error {
         this.name = "CamoufoxNotInstalled";
     }
 }
+export class CorruptedDownload extends Error {
+    constructor(message) {
+        super(message ?? "The download is corrupted.");
+        this.name = "CorruptedDownload";
+    }
+}
 export class FileNotFoundError extends Error {
     constructor(message) {
         super(message ?? "File couldn't be found.");

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
@@ -9,7 +10,9 @@ import AdmZip from "adm-zip";
 import cliProgress from "cli-progress";
 import prettyBytes from "pretty-bytes";
 import { CONSTRAINTS } from "./__version__.js";
-import { CamoufoxNotInstalled, FileNotFoundError, MissingRelease, UnsupportedArchitecture, UnsupportedOS, UnsupportedVersion, } from "./exceptions.js";
+import { effectivePin, pinMatches, pinSpec } from "./browser-pin.js";
+import { CamoufoxNotInstalled, CorruptedDownload, FileNotFoundError, MissingRelease, UnsupportedArchitecture, UnsupportedOS, UnsupportedVersion, } from "./exceptions.js";
+import { browsersDir, compatFlag, getActivePath, getRepoName, loadConfig, setActive, versionFolderName, } from "./multiversion.js";
 const ARCH_MAP = {
     x64: "x86_64",
     ia32: "i686",
@@ -67,7 +70,7 @@ function isPlaywright161OrNewer() {
         return false;
     }
 }
-class Version {
+export class Version {
     release;
     version;
     sorted_rel;
@@ -109,7 +112,8 @@ class Version {
             throw new FileNotFoundError(`Version information not found at ${versionPath}. Please run \`camoufox fetch\` to install.`);
         }
         const versionData = JSON.parse(fs.readFileSync(versionPath, "utf-8"));
-        return new Version(versionData.release, versionData.version);
+        // The flat layout wrote `release`, the versioned one (shared with the Python library) writes `build`.
+        return new Version(versionData.build ?? versionData.release, versionData.version);
     }
     static isSupportedPath(path) {
         return Version.fromPath(path).isSupported();
@@ -132,8 +136,11 @@ export class GitHubDownloader {
         this.githubRepo = githubRepo;
         this.apiUrl = `https://api.github.com/repos/${githubRepo}/releases`;
     }
-    checkAsset(asset) {
+    checkAsset(asset, _release) {
         return asset.browser_download_url;
+    }
+    releasesUrl() {
+        return this.apiUrl;
     }
     missingAssetError() {
         throw new MissingRelease(`Could not find a release asset in ${this.githubRepo}.`);
@@ -141,10 +148,11 @@ export class GitHubDownloader {
     async getAsset({ retries } = { retries: 5 }) {
         let attempts = 0;
         let response;
+        const url = this.releasesUrl();
         while (attempts < retries) {
             try {
-                response = await fetch(this.apiUrl, {
-                    headers: getAuthorizationHeaders(this.apiUrl),
+                response = await fetch(url, {
+                    headers: getAuthorizationHeaders(url),
                 });
                 if (response.ok)
                     break;
@@ -156,14 +164,15 @@ export class GitHubDownloader {
             attempts++;
         }
         if (!response || !response.ok) {
-            throw new Error(`Failed to fetch releases from ${this.apiUrl} after ${retries} attempts`);
+            throw new Error(`Failed to fetch releases from ${url} after ${retries} attempts`);
         }
-        const releases = await response.json();
+        const data = await response.json();
+        const releases = Array.isArray(data) ? data : [data];
         for (const release of releases) {
             if (release.prerelease || release.draft)
                 continue;
             for (const asset of release.assets) {
-                const data = this.checkAsset(asset);
+                const data = this.checkAsset(asset, release);
                 if (data) {
                     return data;
                 }
@@ -177,6 +186,9 @@ export class CamoufoxFetcher extends GitHubDownloader {
     _version_obj;
     pattern;
     _url;
+    isPrerelease = false;
+    sha256;
+    createdAt;
     constructor() {
         super("daijro/camoufox");
         this.arch = CamoufoxFetcher.getPlatformArch();
@@ -185,13 +197,30 @@ export class CamoufoxFetcher extends GitHubDownloader {
     async init() {
         await this.fetchLatest();
     }
-    checkAsset(asset) {
+    releasesUrl() {
+        const pin = effectivePin(loadConfig());
+        return pin && getRepoName(this.githubRepo) === pin.repoName
+            ? `${this.apiUrl}/tags/${pin.tag}`
+            : this.apiUrl;
+    }
+    checkAsset(asset, release) {
         const match = asset.name.match(this.pattern);
         if (!match)
             return null;
         const version = new Version(match[2], match[1]);
         if (!version.isSupported())
             return null;
+        // Install exactly the tested build, unless the user explicitly chose another one.
+        const pin = effectivePin(loadConfig());
+        if (pin &&
+            !pinMatches(pin, getRepoName(this.githubRepo), match[1], match[2])) {
+            return null;
+        }
+        this.isPrerelease = Boolean(release?.prerelease);
+        this.sha256 = asset.digest?.startsWith("sha256:")
+            ? asset.digest.slice("sha256:".length)
+            : undefined;
+        this.createdAt = asset.created_at;
         return [version, asset.browser_download_url];
     }
     missingAssetError() {
@@ -233,44 +262,79 @@ export class CamoufoxFetcher extends GitHubDownloader {
         return false;
     }
     setVersion(destDir = INSTALL_DIR.toString()) {
-        fs.writeFileSync(path.join(destDir, "version.json"), JSON.stringify({ version: this.version, release: this.release }));
+        fs.writeFileSync(path.join(destDir, "version.json"), JSON.stringify({
+            version: this.version,
+            build: this.release,
+            prerelease: this.isPrerelease,
+            sha256: this.sha256 ?? null,
+            created_at: this.createdAt ?? null,
+        }));
     }
     // Remove staging dirs left behind by an interrupted install.
-    static removeLeftovers(installDir) {
-        const parent = path.dirname(installDir);
-        const prefix = `${path.basename(installDir)}.staging-`;
-        for (const name of fs.readdirSync(parent)) {
-            if (name.startsWith(prefix)) {
-                fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+    static removeLeftovers(dir, prefix) {
+        for (const name of fs.readdirSync(dir)) {
+            // Fresh ones may belong to an install still running in another process.
+            if (name.startsWith(prefix) && isStale(path.join(dir, name))) {
+                fs.rmSync(path.join(dir, name), { recursive: true, force: true });
             }
         }
     }
+    static activate(installDir, relativePath) {
+        setActive(relativePath);
+        removeLegacyInstall(installDir);
+    }
     async install() {
         await this.init();
-        // Resolve a symlinked install dir so the swap replaces its target, not the link.
-        const installDir = fs.existsSync(INSTALL_DIR)
-            ? fs.realpathSync(INSTALL_DIR)
-            : INSTALL_DIR.toString();
-        fs.mkdirSync(path.dirname(installDir), { recursive: true });
-        CamoufoxFetcher.removeLeftovers(installDir);
-        // Staged next to the install dir so the final rename stays on one filesystem.
+        const folder = versionFolderName(this.version, this.release, this.sha256);
+        const relativePath = `browsers/${getRepoName(this.githubRepo)}/${folder}`;
+        const installDir = path.join(INSTALL_DIR.toString(), relativePath);
+        fs.mkdirSync(browsersDir(), { recursive: true });
+        // Tells the Python library this directory uses its layout, so it doesn't wipe it.
+        fs.writeFileSync(compatFlag(), "");
+        if (fs.existsSync(path.join(installDir, "version.json"))) {
+            console.log(`Camoufox v${this.verstr} is already installed.`);
+            CamoufoxFetcher.activate(installDir, relativePath);
+            return;
+        }
+        // Older releases staged next to the (symlink-resolved) install dir.
+        const root = fs.realpathSync(INSTALL_DIR);
+        CamoufoxFetcher.removeLeftovers(path.dirname(root), `${path.basename(root)}.staging-`);
+        CamoufoxFetcher.removeLeftovers(browsersDir(), ".staging-");
+        // Staged inside browsers/ so the final rename stays on one filesystem. Dot-prefixed
+        // entries are skipped by install listings, including the Python library's.
         // Set up outside the try so finally can always tear down the ~600MB staging dirs.
-        const stagingDir = fs.mkdtempSync(`${installDir}.staging-`);
+        const stagingDir = fs.mkdtempSync(path.join(browsersDir(), ".staging-"));
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "camoufox-"));
         const tempFilePath = path.join(tempDir, "camoufox.zip");
         const tempFileStream = fs.createWriteStream(tempFilePath);
         try {
             await webdl(this.url, "Downloading Camoufox...", true, tempFileStream);
             await new Promise((r) => tempFileStream.close(r));
+            await verifySha256(tempFilePath, this.sha256, `Camoufox v${this.verstr}`);
             await this.extractZip(tempFilePath, stagingDir);
             this.setVersion(stagingDir);
             if (OS_NAME !== "win") {
                 execFileSync("chmod", ["-R", "755", stagingDir]);
             }
-            // Replace the previous install only once the new one is complete.
-            fs.rmSync(installDir, { recursive: true, force: true });
-            fs.renameSync(stagingDir, installDir);
-            console.log("Camoufox successfully installed.");
+            fs.mkdirSync(path.dirname(installDir), { recursive: true });
+            try {
+                fs.renameSync(stagingDir, installDir);
+            }
+            catch (e) {
+                // Unless another process finished the same install in the meantime, the target is
+                // an install in progress (the Python library extracts in place) or an abandoned one.
+                if (!fs.existsSync(path.join(installDir, "version.json"))) {
+                    if (!fs.existsSync(installDir))
+                        throw e;
+                    if (!isStale(installDir)) {
+                        throw new Error(`Another process is installing Camoufox into ${installDir}, try again once it finishes.`);
+                    }
+                    fs.rmSync(installDir, { recursive: true, force: true });
+                    fs.renameSync(stagingDir, installDir);
+                }
+            }
+            CamoufoxFetcher.activate(installDir, relativePath);
+            console.log(`Camoufox successfully installed to ${installDir}.`);
         }
         catch (e) {
             console.error(`Error installing Camoufox: ${e}`);
@@ -329,27 +393,86 @@ function userCacheDir(appName) {
         return path.join(xdg && path.isAbsolute(xdg) ? xdg : path.join(os.homedir(), ".cache"), appName);
     }
 }
-export function installedVerStr() {
-    return Version.fromPath().fullString;
+// Root entries of the layout shared with the Python library, never part of a flat install.
+const SHARED_ENTRIES = new Set([
+    ".0.5_FLAG",
+    "addons",
+    "browsers",
+    "config.json",
+    "fontconfig",
+    "geoip",
+    "repo_cache.json",
+]);
+// Older than any download or extraction still in progress.
+function isStale(p) {
+    try {
+        return Date.now() - fs.statSync(p).mtimeMs > 24 * 60 * 60 * 1000;
+    }
+    catch {
+        return false;
+    }
 }
-export function camoufoxPath(downloadIfMissing = true) {
-    // Ensure the directory exists and is not empty
-    if (!fs.existsSync(INSTALL_DIR) || fs.readdirSync(INSTALL_DIR).length === 0) {
-        if (!downloadIfMissing) {
-            throw new Error(`Camoufox executable not found at ${INSTALL_DIR}`);
+/**
+ * Removes a flat install of an older release from the root of INSTALL_DIR. It holds the
+ * same top-level entries as the build just installed into `installDir`.
+ */
+function removeLegacyInstall(installDir) {
+    const root = INSTALL_DIR.toString();
+    if (!fs.existsSync(path.join(root, "version.json")))
+        return;
+    try {
+        for (const name of fs.readdirSync(installDir)) {
+            if (!SHARED_ENTRIES.has(name)) {
+                fs.rmSync(path.join(root, name), { recursive: true, force: true });
+            }
         }
     }
-    else if (fs.existsSync(INSTALL_DIR) &&
-        Version.isSupportedPath(INSTALL_DIR)) {
-        return INSTALL_DIR;
+    catch (e) {
+        // The new install is complete; a leftover (e.g. a file still in use on Windows) must not fail it.
+        console.warn(`Failed to remove the previous install at ${root}: ${e}`);
     }
-    else {
+}
+/**
+ * The install a launch uses: the pinned (or explicitly chosen) build from browsers/,
+ * else a flat install of an older release at the root of INSTALL_DIR.
+ */
+function activeInstallDir() {
+    return getActivePath() ?? INSTALL_DIR.toString();
+}
+export function installedVerStr() {
+    return Version.fromPath(activeInstallDir()).fullString;
+}
+/**
+ * @param _downloadIfMissing Ignored, downloads happen in {@link ensureCamoufoxInstalled}.
+ */
+export function camoufoxPath(_downloadIfMissing = true) {
+    const installDir = activeInstallDir();
+    if (!fs.existsSync(path.join(installDir, "version.json"))) {
+        const pin = effectivePin(loadConfig());
+        throw new CamoufoxNotInstalled(`Camoufox${pin ? ` v${pinSpec(pin)}` : ""} is not installed at ${INSTALL_DIR}. Please run \`camoufox fetch\` to install.`);
+    }
+    if (!Version.isSupportedPath(installDir)) {
         throw new UnsupportedVersion(`Camoufox v${installedVerStr()} is not supported by this library (supported range: ${SUPPORTED_RANGE}). Please run \`camoufox fetch\` to install a supported version.`);
     }
-    // Install and recheck
-    const fetcher = new CamoufoxFetcher();
-    fetcher.install().then(() => camoufoxPath());
-    return INSTALL_DIR;
+    return installDir;
+}
+let pendingInstall;
+/**
+ * Installs the pinned build when no supported install is available, as the Python
+ * library does on launch. An explicitly chosen build is never replaced.
+ */
+export async function ensureCamoufoxInstalled() {
+    if (!effectivePin(loadConfig()))
+        return;
+    const installDir = activeInstallDir();
+    if (fs.existsSync(path.join(installDir, "version.json")) &&
+        Version.isSupportedPath(installDir)) {
+        return;
+    }
+    pendingInstall ??= new CamoufoxFetcher().install().finally(() => {
+        pendingInstall = undefined;
+    });
+    await pendingInstall;
 }
 export function getPath(file) {
     if (OS_NAME === "mac") {
@@ -410,6 +533,20 @@ export async function webdl(url, desc = "", bar = true, buffer = null, { retries
         progressBar?.stop();
     }
     return Buffer.concat(chunks);
+}
+async function verifySha256(file, expected, desc) {
+    if (!expected) {
+        console.warn(`No sha256 published for ${desc}, skipping verification.`);
+        return;
+    }
+    const hash = createHash("sha256");
+    for await (const chunk of fs.createReadStream(file)) {
+        hash.update(chunk);
+    }
+    const actual = hash.digest("hex");
+    if (actual !== expected.toLowerCase()) {
+        throw new CorruptedDownload(`Checksum mismatch for ${desc}: expected sha256 ${expected.toLowerCase()}, got ${actual}.`);
+    }
 }
 export async function unzip(zipFile, extractPath, desc, bar = true) {
     const zip = new AdmZip(zipFile);

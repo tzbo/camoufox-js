@@ -12,7 +12,7 @@ export declare const LOCAL_DATA: PathLike;
 export declare const OS_ARCH_MATRIX: {
     [key: string]: string[];
 };
-declare class Version {
+export declare class Version {
     release: string;
     version?: string;
     sorted_rel: number[];
@@ -30,7 +30,8 @@ export declare class GitHubDownloader {
     githubRepo: string;
     apiUrl: string;
     constructor(githubRepo: string);
-    checkAsset(asset: any): any;
+    checkAsset(asset: any, _release?: any): any;
+    releasesUrl(): string;
     missingAssetError(): void;
     getAsset({ retries }?: {
         retries: number;
@@ -41,9 +42,13 @@ export declare class CamoufoxFetcher extends GitHubDownloader {
     _version_obj?: Version;
     pattern: RegExp;
     _url?: string;
+    isPrerelease: boolean;
+    sha256?: string;
+    createdAt?: string;
     constructor();
     init(): Promise<void>;
-    checkAsset(asset: any): [Version, string] | null;
+    releasesUrl(): string;
+    checkAsset(asset: any, release?: any): [Version, string] | null;
     missingAssetError(): void;
     static getPlatformArch(): string;
     fetchLatest(): Promise<void>;
@@ -52,6 +57,7 @@ export declare class CamoufoxFetcher extends GitHubDownloader {
     static cleanup(): boolean;
     setVersion(destDir?: string): void;
     private static removeLeftovers;
+    private static activate;
     install(): Promise<void>;
     get url(): string;
     get version(): string;
@@ -59,11 +65,18 @@ export declare class CamoufoxFetcher extends GitHubDownloader {
     get verstr(): string;
 }
 export declare function installedVerStr(): string;
-export declare function camoufoxPath(downloadIfMissing?: boolean): PathLike;
+/**
+ * @param _downloadIfMissing Ignored, downloads happen in {@link ensureCamoufoxInstalled}.
+ */
+export declare function camoufoxPath(_downloadIfMissing?: boolean): PathLike;
+/**
+ * Installs the pinned build when no supported install is available, as the Python
+ * library does on launch. An explicitly chosen build is never replaced.
+ */
+export declare function ensureCamoufoxInstalled(): Promise<void>;
 export declare function getPath(file: string): string;
 export declare function launchPath(): string;
 export declare function webdl(url: string, desc?: string, bar?: boolean, buffer?: Writable | null, { retries }?: {
     retries: number;
 }): Promise<Buffer>;
 export declare function unzip(zipFile: Buffer, extractPath: string, desc?: string, bar?: boolean): Promise<void>;
-export {};

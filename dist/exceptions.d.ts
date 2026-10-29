@@ -71,6 +71,9 @@ export declare class VirtualDisplayNotSupported extends VirtualDisplayError {
 export declare class CamoufoxNotInstalled extends Error {
     constructor(message?: string);
 }
+export declare class CorruptedDownload extends Error {
+    constructor(message?: string);
+}
 export declare class FileNotFoundError extends Error {
     constructor(message?: string);
 }
