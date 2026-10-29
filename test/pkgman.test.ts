@@ -400,7 +400,7 @@ describe("install resolution", () => {
 	});
 
 	test("ensureCamoufoxInstalled replaces an unsupported install once", async () => {
-		flatInstall("beta.34");
+		flatInstall("beta.29");
 		const { ensureCamoufoxInstalled, install } = await spyOnInstall();
 		await Promise.all([ensureCamoufoxInstalled(), ensureCamoufoxInstalled()]);
 		expect(install).toHaveBeenCalledTimes(1);
@@ -481,7 +481,7 @@ describe("CamoufoxFetcher release selection", () => {
 			JSON.stringify({ channel: "official/stable" }),
 		);
 		const fetcher = await fetcherFor(builds);
-		expect(fetcher.verstr).toBe("152.0.4-beta.31");
+		expect(fetcher.verstr).toBe("156.0.1-beta.34");
 		expect(vi.mocked(fetch).mock.calls[0][0]).toBe(
 			"https://api.github.com/repos/daijro/camoufox/releases",
 		);
@@ -536,8 +536,23 @@ describe("camoufoxPath browser floor", () => {
 });
 
 describe("CamoufoxFetcher supported range", () => {
+	let installDir: string;
+
+	beforeEach(() => {
+		installDir = fs.mkdtempSync(path.join(os.tmpdir(), "cfx-rangetest-"));
+		fs.writeFileSync(
+			path.join(installDir, "config.json"),
+			JSON.stringify({ channel: "official/stable" }),
+		);
+		vi.stubEnv("CAMOUFOX_INSTALL_DIR", installDir);
+		vi.resetModules();
+	});
+
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
+		vi.resetModules();
+		fs.rmSync(installDir, { recursive: true, force: true });
 	});
 
 	test("installs the newest release in range", async () => {

@@ -673,6 +673,7 @@ export function applyConfigFixes(
 		screen?: boolean;
 		media?: boolean;
 		seed?: number;
+		salt?: bigint | number;
 	} = {},
 ): void {
 	const {
@@ -755,13 +756,9 @@ export function applyConfigFixes(
 		fixMedia &&
 		!Object.keys(config).some((k) => k.startsWith("mediaDevices:"))
 	) {
-		Object.assign(
-			config,
-			drawMediaDevices(
-				targetOs,
-				parts.seed ?? identitySeed(config, identitySalt()),
-			),
-		);
+		const mediaSeed =
+			parts.seed ?? identitySeed(config, parts.salt ?? identitySalt());
+		Object.assign(config, drawMediaDevices(targetOs, mediaSeed));
 	}
 }
 
@@ -890,9 +887,24 @@ export async function generateContextFingerprint(
 		salt = identitySalt(options.fingerprint ?? fp);
 		config = fromBrowserforge(fp, ffVersion);
 		dropAudioSeed(config);
+		if (String(config["navigator.userAgent"] ?? "").includes("Linux")) {
+			applyConfigFixes(config, "lin", {
+				navigator: true,
+				screen: false,
+				media: false,
+			});
+		}
 
 		const plat = String(config["navigator.platform"] ?? "");
 		const osName = platformToOs(plat);
+		if (!config["navigator.oscpu"]) {
+			const oscpu = deriveOscpu(plat);
+			if (oscpu) config["navigator.oscpu"] = oscpu;
+		}
+		const derived = appVersionFromUserAgent(
+			String(config["navigator.userAgent"] ?? ""),
+		);
+		if (derived) config["navigator.appVersion"] = derived;
 		const seed = identitySeed(config, salt);
 		if (!config.fonts) {
 			try {
@@ -908,14 +920,6 @@ export async function generateContextFingerprint(
 				/* optional */
 			}
 		}
-		if (!config["navigator.oscpu"]) {
-			const oscpu = deriveOscpu(plat);
-			if (oscpu) config["navigator.oscpu"] = oscpu;
-		}
-		const derived = appVersionFromUserAgent(
-			String(config["navigator.userAgent"] ?? ""),
-		);
-		if (derived) config["navigator.appVersion"] = derived;
 		if (!config["webGl:vendor"] || !config["webGl:renderer"]) {
 			try {
 				const targetOs = osToKey(typeof os === "string" ? os : osName);
@@ -956,6 +960,7 @@ export async function generateContextFingerprint(
 	const targetOs = osToKey(
 		platformToOs(String(config["navigator.platform"] ?? "")),
 	);
+	applyConfigFixes(config, targetOs, { salt });
 	if (!config.voices) {
 		try {
 			config.voices = generateVoiceSubset(
@@ -967,7 +972,6 @@ export async function generateContextFingerprint(
 			/* optional */
 		}
 	}
-	applyConfigFixes(config, targetOs, { seed: identitySeed(config, salt) });
 	dropAudioSeed(config);
 	if (configOverrides) {
 		dropAudioSeed(configOverrides);

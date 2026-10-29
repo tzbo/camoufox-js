@@ -229,45 +229,56 @@ function isSoftwareRenderer(renderer) {
         "Generic Renderer",
     ].some((name) => renderer.includes(name));
 }
+const LAUNCHER_ENV_PREFIXES = ["CAMOU_", "FONTCONFIG_FILE"];
 const hostGpuCache = new Map();
-async function probeHostGpu(executablePath, headless) {
-    const key = `${executablePath}\0${headless}`;
-    if (hostGpuCache.has(key))
-        return hostGpuCache.get(key) ?? null;
-    let result = null;
-    try {
-        const { firefox } = await import("playwright-core");
-        const browser = await firefox.launch({
-            executablePath,
-            headless,
-            firefoxUserPrefs: { "webgl.force-enabled": true },
-        });
-        try {
-            const page = await browser.newPage();
-            const gpu = await page.evaluate(() => {
-                const doc = globalThis.document;
-                const gl = doc.createElement("canvas").getContext("webgl");
-                const info = gl?.getExtension("WEBGL_debug_renderer_info");
-                if (!gl || !info)
-                    return null;
-                return [
-                    gl.getParameter(info.UNMASKED_VENDOR_WEBGL),
-                    gl.getParameter(info.UNMASKED_RENDERER_WEBGL),
-                ];
-            });
-            if (Array.isArray(gpu) && gpu[0] && gpu[1]) {
-                result = [String(gpu[0]), String(gpu[1])];
+function probeHostGpu(executablePath, headless, env = {}) {
+    const hostEnvEntries = Object.entries(env)
+        .filter(([k, v]) => v !== undefined &&
+        !LAUNCHER_ENV_PREFIXES.some((prefix) => k.startsWith(prefix)))
+        .map(([k, v]) => [k, String(v)])
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const key = JSON.stringify([executablePath, headless, hostEnvEntries]);
+    let pending = hostGpuCache.get(key);
+    if (!pending) {
+        const hostEnv = Object.fromEntries(hostEnvEntries);
+        pending = (async () => {
+            try {
+                const { firefox } = await import("playwright-core");
+                const browser = await firefox.launch({
+                    executablePath,
+                    headless,
+                    env: hostEnv,
+                    firefoxUserPrefs: { "webgl.force-enabled": true },
+                });
+                try {
+                    const page = await browser.newPage();
+                    const gpu = await page.evaluate(() => {
+                        const doc = globalThis.document;
+                        const gl = doc.createElement("canvas").getContext("webgl");
+                        const info = gl?.getExtension("WEBGL_debug_renderer_info");
+                        if (!gl || !info)
+                            return null;
+                        return [
+                            gl.getParameter(info.UNMASKED_VENDOR_WEBGL),
+                            gl.getParameter(info.UNMASKED_RENDERER_WEBGL),
+                        ];
+                    });
+                    if (Array.isArray(gpu) && gpu[0] && gpu[1]) {
+                        return [String(gpu[0]), String(gpu[1])];
+                    }
+                }
+                finally {
+                    await browser.close();
+                }
             }
-        }
-        finally {
-            await browser.close();
-        }
+            catch {
+                return null;
+            }
+            return null;
+        })();
+        hostGpuCache.set(key, pending);
     }
-    catch {
-        result = null;
-    }
-    hostGpuCache.set(key, result);
-    return result;
+    return pending;
 }
 function stockProfileDiskCapacityKb() {
     const home = homedir();
@@ -584,7 +595,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
             screen: !userSetScreenWindow,
             media: !userSetMediaDevices &&
                 isLiveProperty(knownProperties, "mediaDevices:enabled"),
-            seed: drawSeed(),
+            salt: pinnedSalt,
         });
     }
     if (custom_fonts_only) {
@@ -641,6 +652,16 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
     if (locale) {
         handleLocales(locale, config);
     }
+    const requestedLocale = config["locale:language"]
+        ? [
+            config["locale:language"],
+            config["locale:script"],
+            config["locale:region"],
+        ]
+            .filter(Boolean)
+            .join("-")
+        : "en-US";
+    firefox_user_prefs["intl.locale.requested"] ??= requestedLocale;
     if (isLiveProperty(knownProperties, "voices") &&
         (!userSetVoices || !("voices" in config))) {
         const voiceLocale = config["locale:language"]
@@ -692,7 +713,7 @@ export async function launchOptions({ config, os, block_images, block_webrtc, bl
         if (!webglDisabled) {
             const bin = executable_path ? String(executable_path) : launchPath();
             const probed = existsSync(bin)
-                ? await probeHostGpu(bin, headlessBoolean)
+                ? await probeHostGpu(bin, headlessBoolean, env)
                 : null;
             if (probed && !isSoftwareRenderer(probed[1])) {
                 try {

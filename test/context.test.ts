@@ -7,10 +7,15 @@ import {
 	getRandomPreset,
 	NewContext,
 } from "../src";
-import { INSTALL_DIR } from "../src/pkgman";
+import { camoufoxPath } from "../src/pkgman";
 
 function camoufoxInstalled(): boolean {
-	return fs.existsSync(path.join(INSTALL_DIR.toString(), "version.json"));
+	try {
+		camoufoxPath(false);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 describe("generateContextFingerprint", () => {

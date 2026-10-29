@@ -336,47 +336,65 @@ function isSoftwareRenderer(renderer: string): boolean {
 	].some((name) => renderer.includes(name));
 }
 
-const hostGpuCache = new Map<string, [string, string] | null>();
+const LAUNCHER_ENV_PREFIXES = ["CAMOU_", "FONTCONFIG_FILE"];
+const hostGpuCache = new Map<string, Promise<[string, string] | null>>();
 
-async function probeHostGpu(
+function probeHostGpu(
 	executablePath: string,
 	headless: boolean,
+	env: Record<string, string | number | boolean> = {},
 ): Promise<[string, string] | null> {
-	const key = `${executablePath}\0${headless}`;
-	if (hostGpuCache.has(key)) return hostGpuCache.get(key) ?? null;
-	let result: [string, string] | null = null;
-	try {
-		const { firefox } = await import("playwright-core");
-		const browser = await firefox.launch({
-			executablePath,
-			headless,
-			firefoxUserPrefs: { "webgl.force-enabled": true },
-		});
-		try {
-			const page = await browser.newPage();
-			const gpu = await page.evaluate(() => {
-				const doc = (
-					globalThis as { document: { createElement: (tag: string) => any } }
-				).document;
-				const gl = doc.createElement("canvas").getContext("webgl");
-				const info = gl?.getExtension("WEBGL_debug_renderer_info");
-				if (!gl || !info) return null;
-				return [
-					gl.getParameter(info.UNMASKED_VENDOR_WEBGL),
-					gl.getParameter(info.UNMASKED_RENDERER_WEBGL),
-				];
-			});
-			if (Array.isArray(gpu) && gpu[0] && gpu[1]) {
-				result = [String(gpu[0]), String(gpu[1])];
+	const hostEnvEntries = Object.entries(env)
+		.filter(
+			([k, v]) =>
+				v !== undefined &&
+				!LAUNCHER_ENV_PREFIXES.some((prefix) => k.startsWith(prefix)),
+		)
+		.map(([k, v]) => [k, String(v)] as const)
+		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	const key = JSON.stringify([executablePath, headless, hostEnvEntries]);
+	let pending = hostGpuCache.get(key);
+	if (!pending) {
+		const hostEnv = Object.fromEntries(hostEnvEntries);
+		pending = (async (): Promise<[string, string] | null> => {
+			try {
+				const { firefox } = await import("playwright-core");
+				const browser = await firefox.launch({
+					executablePath,
+					headless,
+					env: hostEnv,
+					firefoxUserPrefs: { "webgl.force-enabled": true },
+				});
+				try {
+					const page = await browser.newPage();
+					const gpu = await page.evaluate(() => {
+						const doc = (
+							globalThis as {
+								document: { createElement: (tag: string) => any };
+							}
+						).document;
+						const gl = doc.createElement("canvas").getContext("webgl");
+						const info = gl?.getExtension("WEBGL_debug_renderer_info");
+						if (!gl || !info) return null;
+						return [
+							gl.getParameter(info.UNMASKED_VENDOR_WEBGL),
+							gl.getParameter(info.UNMASKED_RENDERER_WEBGL),
+						];
+					});
+					if (Array.isArray(gpu) && gpu[0] && gpu[1]) {
+						return [String(gpu[0]), String(gpu[1])];
+					}
+				} finally {
+					await browser.close();
+				}
+			} catch {
+				return null;
 			}
-		} finally {
-			await browser.close();
-		}
-	} catch {
-		result = null;
+			return null;
+		})();
+		hostGpuCache.set(key, pending);
 	}
-	hostGpuCache.set(key, result);
-	return result;
+	return pending;
 }
 
 function stockProfileDiskCapacityKb(): number | undefined {
@@ -914,7 +932,7 @@ export async function launchOptions({
 			media:
 				!userSetMediaDevices &&
 				isLiveProperty(knownProperties, "mediaDevices:enabled"),
-			seed: drawSeed(),
+			salt: pinnedSalt,
 		});
 	}
 
@@ -980,6 +998,17 @@ export async function launchOptions({
 		handleLocales(locale, config);
 	}
 
+	const requestedLocale = config["locale:language"]
+		? [
+				config["locale:language"],
+				config["locale:script"],
+				config["locale:region"],
+			]
+				.filter(Boolean)
+				.join("-")
+		: "en-US";
+	firefox_user_prefs["intl.locale.requested"] ??= requestedLocale;
+
 	if (
 		isLiveProperty(knownProperties, "voices") &&
 		(!userSetVoices || !("voices" in config))
@@ -1040,7 +1069,7 @@ export async function launchOptions({
 		if (!webglDisabled) {
 			const bin = executable_path ? String(executable_path) : launchPath();
 			const probed = existsSync(bin)
-				? await probeHostGpu(bin, headlessBoolean)
+				? await probeHostGpu(bin, headlessBoolean, env)
 				: null;
 			if (probed && !isSoftwareRenderer(probed[1])) {
 				try {

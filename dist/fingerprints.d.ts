@@ -30,6 +30,7 @@ export declare function applyConfigFixes(config: Record<string, any>, targetOs: 
     screen?: boolean;
     media?: boolean;
     seed?: number;
+    salt?: bigint | number;
 }): void;
 export interface ContextFingerprintOptions {
     preset?: FingerprintPreset;
